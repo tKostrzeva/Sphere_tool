@@ -1,9 +1,10 @@
-// Sphere v06 — an animated hollow point-sphere wrapped by a delayed "membrane"
+// Sphere v07 — an animated hollow point-sphere wrapped by a delayed "membrane"
 // shell, surrounded by free-floating particles. The particles drift around the
 // canvas; when the cursor is near they are drawn to it and follow it. The
 // membrane is a selective barrier: the "breakthrough" fraction of particles
-// penetrate into the sphere (sucked to the centre, then respawn outside), the
-// rest bounce off it and stay in floating mode.
+// penetrate into the sphere (and float around inside), the rest slide off it
+// and stay in floating mode. Particles are white while floating outside and
+// switch to the "inside" colour once they have been drawn into the sphere.
 
 const N_POINTS = 11000;    // points on the sphere shell
 const N_BUCKETS = 32;      // pre-tinted sphere sprites (A→B gradient)
@@ -22,7 +23,8 @@ let hx, hy;                // home = anchor + a small wobble; the particle sprin
 let fesc;                  // fixed random threshold [0,1); low = penetrates first
 let fAlpha;                // opacity
 let fInside;               // 1 = the particle now lives (floats) inside the sphere
-let floatGlow = null, floatCore = null;  // single-colour sprites
+let floatGlow = null, floatCore = null;  // outside (floating) particle sprites
+let insideGlow = null, insideCore = null; // inside (absorbed) particle sprites
 let floatT = 0;            // flow-field time
 let floatReady = false;    // spread particles once the canvas has its real size
 let cursorOver = false;    // is the mouse actually hovering the canvas?
@@ -150,12 +152,20 @@ function buildSprites() {
   }
 }
 
-// Single-colour sprites for the floating particles.
-function buildFloatSprites() {
-  const c = color(document.getElementById('floatColorPick').value);
+// Single-colour sprite pair (soft glow + crisp core) in the given colour.
+function buildParticleSprites(hex) {
+  const c = color(hex);
   const r = Math.round(red(c)), g = Math.round(green(c)), bl = Math.round(blue(c));
-  floatGlow = makeSprite(r, g, bl, [[0.0, 0.5], [0.4, 0.18], [1.0, 0]]);
-  floatCore = makeSprite(r, g, bl, [[0.0, 0.95], [0.5, 0.85], [0.75, 0.2], [1.0, 0]]);
+  return [
+    makeSprite(r, g, bl, [[0.0, 0.5], [0.4, 0.18], [1.0, 0]]),
+    makeSprite(r, g, bl, [[0.0, 0.95], [0.5, 0.85], [0.75, 0.2], [1.0, 0]])
+  ];
+}
+
+// Sprites for outside (floating) and inside (absorbed) particles.
+function buildFloatSprites() {
+  [floatGlow, floatCore] = buildParticleSprites(document.getElementById('floatColorPick').value);
+  [insideGlow, insideCore] = buildParticleSprites(document.getElementById('insideColorPick').value);
 }
 
 function setup() {
@@ -416,10 +426,13 @@ function renderScene(ctx, W, H, opaque, scale) {
     const sy = cy + (fy[i] - height / 2) * scale;
     const al = fAlpha[i];
     if (al <= 0.004) continue;
+    // White while floating outside; the inside colour once drawn into the sphere.
+    const glowS = fInside[i] ? insideGlow : floatGlow;
+    const coreS = fInside[i] ? insideCore : floatCore;
     ctx.globalAlpha = al * 0.7;
-    ctx.drawImage(floatGlow, sx - fGlow / 2, sy - fGlow / 2, fGlow, fGlow);
+    ctx.drawImage(glowS, sx - fGlow / 2, sy - fGlow / 2, fGlow, fGlow);
     ctx.globalAlpha = al;
-    ctx.drawImage(floatCore, sx - fCore / 2, sy - fCore / 2, fCore, fCore);
+    ctx.drawImage(coreS, sx - fCore / 2, sy - fCore / 2, fCore, fCore);
   }
 
   ctx.globalAlpha = 1;

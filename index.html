@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sphere | v06</title>
+  <title>Sphere | v07</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
     <button class="topbar-toggle" id="panelToggle">
       <span id="toggleArrow">←</span> options
     </button>
-    <span class="topbar-title">Sphere | v06</span>
+    <span class="topbar-title">Sphere | v07</span>
   </header>
 
   <div class="layout">
@@ -107,6 +107,14 @@
           <div class="color-row">
             <input type="color" class="color-swatch" id="floatColorPick" value="#ffffff">
             <input type="text"  class="hex-in" id="floatColor-hex" value="#ffffff" maxlength="7" spellcheck="false">
+          </div>
+        </div>
+
+        <div class="ctrl">
+          <label class="ctrl-label">Inside color</label>
+          <div class="color-row">
+            <input type="color" class="color-swatch" id="insideColorPick" value="#b148ff">
+            <input type="text"  class="hex-in" id="insideColor-hex" value="#b148ff" maxlength="7" spellcheck="false">
           </div>
         </div>
 
@@ -212,6 +220,7 @@
     wireColor('colorAPick', 'colorA-hex');
     wireColor('colorBPick', 'colorB-hex');
     wireColor('floatColorPick', 'floatColor-hex');
+    wireColor('insideColorPick', 'insideColor-hex');
   </script>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>

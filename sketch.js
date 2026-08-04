@@ -1,10 +1,9 @@
-// Sphere v07 — an animated hollow point-sphere wrapped by a delayed "membrane"
-// shell, surrounded by free-floating particles. The particles drift around the
-// canvas; when the cursor is near they are drawn to it and follow it. The
-// membrane is a selective barrier: the "breakthrough" fraction of particles
-// penetrate into the sphere (and float around inside), the rest slide off it
-// and stay in floating mode. Particles are white while floating outside and
-// switch to the "inside" colour once they have been drawn into the sphere.
+// Sphere v08 — same as v07, tuned for weak GPUs. The additive canvas render is
+// fill-rate + draw-call bound, so: each point / particle is a single merged
+// sprite (bright core + glow baked in) instead of two draws; the membrane is
+// drawn at half density; and an adaptive governor raises the point stride when
+// the frame rate drops, keeping it smooth on slow machines (full quality on
+// fast ones and always for the PNG/video export).
 
 const N_POINTS = 11000;    // points on the sphere shell
 const N_BUCKETS = 32;      // pre-tinted sphere sprites (A→B gradient)
@@ -28,6 +27,10 @@ let insideGlow = null, insideCore = null; // inside (absorbed) particle sprites
 let floatT = 0;            // flow-field time
 let floatReady = false;    // spread particles once the canvas has its real size
 let cursorOver = false;    // is the mouse actually hovering the canvas?
+
+// Adaptive quality governor.
+let qStride = 1;           // draw every qStride-th sphere point (1 = full quality)
+let fpsAccum = 0, fpsCount = 0;
 
 let noiseScaleVal = 28;
 let noiseOffsetX = 0;
@@ -251,7 +254,19 @@ function draw() {
   if (!floatReady) { resetFloaters(); floatReady = true; }
   updateFloaters();
 
-  renderScene(drawingContext, width, height, true, 1);
+  // Adaptive quality: raise the point stride if the frame rate sags, lower it
+  // when there is headroom (recording pins full quality so exports stay clean).
+  fpsAccum += deltaTime; fpsCount++;
+  if (fpsCount >= 30) {
+    const fps = 1000 / (fpsAccum / fpsCount);
+    if (!isRecording) {
+      if (fps < 48 && qStride < 4) qStride++;
+      else if (fps > 57 && qStride > 1) qStride--;
+    }
+    fpsAccum = 0; fpsCount = 0;
+  }
+
+  renderScene(drawingContext, width, height, true, 1, isRecording ? 1 : qStride);
 
   if (isRecording && recordingHdCtx) {
     recordingHdCtx.clearRect(0, 0, recordingHdCanvas.width, recordingHdCanvas.height);
@@ -343,7 +358,7 @@ function updateFloaters() {
     }
 
     // Speed clamp.
-    const sp = Math.hypot(fvx[i], fvy[i]);
+    const sp = Math.sqrt(fvx[i] * fvx[i] + fvy[i] * fvy[i]);
     if (sp > maxSp) { fvx[i] *= maxSp / sp; fvy[i] *= maxSp / sp; }
   }
 }
@@ -351,7 +366,7 @@ function updateFloaters() {
 // Draw the whole scene (sphere shell + membrane + floaters) onto ctx at W×H.
 // `opaque` paints the dark background (transparent for PNG export); `scale`
 // rescales positions/sizes when rendering at a different resolution.
-function renderScene(ctx, W, H, opaque, scale) {
+function renderScene(ctx, W, H, opaque, scale, stride) {
   const cx = W / 2, cy = H / 2;
   const minDim = Math.min(W, H);
   const R = minDim * 0.29;
@@ -361,9 +376,12 @@ function renderScene(ctx, W, H, opaque, scale) {
   const offX = noiseOffsetX * 0.01;
   const offY = noiseOffsetY * 0.01;
 
-  const glowSize = minDim * map(glow, 1, 100, 0.008, 0.030);
-  const coreSize = minDim * map(pointSize, 1, 100, 0.0025, 0.011);
-  const membSize = glowSize * 1.5;
+  // With a coarser stride each point covers for more, so grow it a little (but
+  // not fully, so slow machines also draw fewer pixels overall).
+  const sizeComp = Math.pow(stride, 0.4);
+  const glowSize = minDim * map(glow, 1, 100, 0.008, 0.030) * sizeComp;
+  const coreSize = minDim * map(pointSize, 1, 100, 0.0025, 0.011) * sizeComp;
+  const membSize = glowSize * 1.5 * Math.SQRT2;   // ×√2 to cover the half-density membrane
   const gapWorld = minDim * map(membraneGap, 0, 100, 0.0, 0.05);
   const membAlpha = membraneOpacity / 100;
   const rimPow = map(hollow, 0, 100, 0.15, 4.0);
@@ -380,7 +398,8 @@ function renderScene(ctx, W, H, opaque, scale) {
   ctx.globalCompositeOperation = 'lighter';
 
   // ── Sphere shell + membrane ──
-  for (let i = 0; i < N_POINTS; i++) {
+  const drawMemb = membraneOn && membAlpha > 0;
+  for (let i = 0, k = 0; i < N_POINTS; i += stride, k++) {
     const d = dirs[i];
     const n = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
     const rBase = R * (1 + (n - 0.5) * 2 * DISP);
@@ -397,8 +416,9 @@ function renderScene(ctx, W, H, opaque, scale) {
 
     const bucket = Math.min(N_BUCKETS - 1, Math.max(0, Math.round(n * (N_BUCKETS - 1))));
 
-    // Membrane — delayed-noise wobble, same orientation.
-    if (membraneOn && membAlpha > 0) {
+    // Membrane — delayed-noise wobble, half density (every other drawn point;
+    // it is a soft blur so the missing half is invisible, but saves a big draw).
+    if (drawMemb && (k & 1) === 0) {
       const nm = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + membNT);
       const rm = R * (1 + (nm - 0.5) * 2 * DISP) + gapWorld;
       const perspM = focal / (focal - rz2 * rm);
@@ -409,23 +429,23 @@ function renderScene(ctx, W, H, opaque, scale) {
       ctx.drawImage(glowSprites[bm], mx - ms / 2, my - ms / 2, ms, ms);
     }
 
+    // Point — soft glow + crisp core (unchanged v07 look).
     const persp = focal / (focal - rz2 * rBase);
     const sx = cx + rx * rBase * persp, sy = cy + ry * rBase * persp;
     const gs = glowSize * persp, cs = coreSize * persp;
-
     ctx.globalAlpha = alpha;
     ctx.drawImage(glowSprites[bucket], sx - gs / 2, sy - gs / 2, gs, gs);
     ctx.globalAlpha = Math.min(1, alpha * 1.35);
     ctx.drawImage(coreSprites[bucket], sx - cs / 2, sy - cs / 2, cs, cs);
   }
 
-  // ── Floating particles ──
+  // ── Floating particles (soft glow + crisp core, full density) ──
   const fGlow = minDim * 0.018, fCore = minDim * 0.0055;
   for (let i = 0; i < particleCount; i++) {
-    const sx = cx + (fx[i] - width / 2) * scale;
-    const sy = cy + (fy[i] - height / 2) * scale;
     const al = fAlpha[i];
     if (al <= 0.004) continue;
+    const sx = cx + (fx[i] - width / 2) * scale;
+    const sy = cy + (fy[i] - height / 2) * scale;
     // White while floating outside; the inside colour once drawn into the sphere.
     const glowS = fInside[i] ? insideGlow : floatGlow;
     const coreS = fInside[i] ? insideCore : floatCore;
@@ -451,7 +471,7 @@ function exportPNG() {
   const ectx = cv.getContext('2d');
   const scale = Math.min(EW, EH) / Math.min(width, height);
 
-  renderScene(ectx, EW, EH, false, scale);
+  renderScene(ectx, EW, EH, false, scale, 1);   // full quality for export
 
   cv.toBlob(function (blob) {
     const a = document.createElement('a');

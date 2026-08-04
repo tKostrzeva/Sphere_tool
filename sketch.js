@@ -32,30 +32,22 @@ let cursorOver = false;    // is the mouse actually hovering the canvas?
 let qStride = 1;           // draw every qStride-th sphere point (1 = full quality)
 let fpsAccum = 0, fpsCount = 0;
 
-let sphereCount = N_POINTS;   // live point count (Density slider)
-let renderMode = 'points';    // points | wireframe | rings | meridians | fill | spikes
-
 // UV grid (rows × cols) — geometry for the line / fill render modes.
 let gridDirs = [];
 let gRows = 0, gCols = 0;
 let gPX = null, gPY = null, gA = null;   // per-vertex projected x/y and rim alpha
 
-let noiseScaleVal = 28;
-let noiseOffsetX = 0;
-let noiseOffsetY = 0;
-let noiseSpeed = 0.018;
-let glow = 45;
-let pointSize = 40;
-let hollow = 60;
-let particleCount = 1400;
-let pullForce = 55;
-let floatTrail = 45;
-let reach = 45;
-let breakthrough = 45;
-let membraneOn = true;
-let membraneGap = 30;
-let membraneOpacity = 45;
-let membraneDelay = 1500;
+// ── UI-controlled settings ──────────────────────────────────────────────────
+// These are ALL initialised from the matching input in index.html at setup()
+// (see the bind() calls). To change a default, edit only the `value="…"` in
+// index.html — nothing here needs touching.
+let sphereCount, renderMode;
+let noiseScaleVal, noiseOffsetX, noiseOffsetY, noiseSpeed;
+let glow, pointSize, hollow;
+let particleCount, pullForce, floatTrail, reach, breakthrough;
+let membraneOn, membraneGap, membraneOpacity, membraneDelay;
+// ─────────────────────────────────────────────────────────────────────────────
+
 let noiseHist = [];
 let membNT = 0;
 let noiseT = 0;
@@ -199,42 +191,53 @@ function buildFloatSprites() {
   [insideGlow, insideCore] = buildParticleSprites(document.getElementById('insideColorPick').value);
 }
 
+// Read a control's current value into a global (so defaults live in index.html)
+// and keep it in sync on every change. `onChange` runs any needed rebuild;
+// `isToggle` reads a checkbox's checked state instead of its value.
+function bind(id, setter, onChange, isToggle) {
+  const el = document.getElementById(id);
+  const read = () => (isToggle ? el.checked : el.value);
+  setter(read());                                    // apply the HTML default now
+  const run = () => { setter(read()); if (onChange) onChange(); };
+  el.addEventListener('input', run);
+  el.addEventListener('change', run);
+}
+
 function setup() {
   const [cW, cH] = calcCanvas(currentRatio());
   createCanvas(cW, cH).parent('canvas-container');
   pixelDensity(1);
   colorMode(RGB, 255);
 
-  noiseSeed(42);
+  // Every tunable is read from its HTML input — defaults live only in index.html.
+  bind('noise-seed-slider', v => noiseSeed(+v));
+  bind('noise-scale-slider', v => noiseScaleVal = +v);
+  bind('noise-x-slider', v => noiseOffsetX = +v);
+  bind('noise-y-slider', v => noiseOffsetY = +v);
+  bind('noise-speed-slider', v => noiseSpeed = +v * 0.001);
+  bind('glow-slider', v => glow = +v, buildSprites);
+  bind('pointsize-slider', v => pointSize = +v);
+  bind('density-slider', v => sphereCount = +v, () => { buildPoints(sphereCount); buildGrid(sphereCount); });
+  bind('render-mode', v => renderMode = v);
+  bind('hollow-slider', v => hollow = +v);
+  bind('count-slider', v => particleCount = +v);
+  bind('pull-slider', v => pullForce = +v);
+  bind('elastic-slider', v => floatTrail = +v);
+  bind('reach-slider', v => reach = +v);
+  bind('breakthrough-slider', v => breakthrough = +v);
+  bind('membrane-toggle', v => membraneOn = v, null, true);
+  bind('membrane-gap-slider', v => membraneGap = +v);
+  bind('membrane-opacity-slider', v => membraneOpacity = +v);
+  bind('membrane-delay-slider', v => membraneDelay = +v);
+
+  // Build geometry + sprites from the values just read.
+  buildFloaters();
   buildPoints(sphereCount);
   buildGrid(sphereCount);
-  buildFloaters();
   buildSprites();
   buildFloatSprites();
 
-  select("#noise-seed-slider").input(function () { noiseSeed(int(this.value())); });
-  select("#noise-scale-slider").input(function () { noiseScaleVal = int(this.value()); });
-  select("#noise-x-slider").input(function () { noiseOffsetX = int(this.value()); });
-  select("#noise-y-slider").input(function () { noiseOffsetY = int(this.value()); });
-  select("#noise-speed-slider").input(function () { noiseSpeed = int(this.value()) * 0.001; });
-  select("#glow-slider").input(function () { glow = int(this.value()); buildSprites(); });
-  select("#pointsize-slider").input(function () { pointSize = int(this.value()); });
-  select("#density-slider").input(function () { sphereCount = int(this.value()); buildPoints(sphereCount); buildGrid(sphereCount); });
-  select("#render-mode").changed(function () { renderMode = this.value(); });
-  select("#hollow-slider").input(function () { hollow = int(this.value()); });
-
-  select("#count-slider").input(function () { particleCount = int(this.value()); });
-  select("#pull-slider").input(function () { pullForce = int(this.value()); });
-  select("#elastic-slider").input(function () { floatTrail = int(this.value()); });
-  select("#reach-slider").input(function () { reach = int(this.value()); });
-  select("#breakthrough-slider").input(function () { breakthrough = int(this.value()); });
   select("#reset-particles").mousePressed(resetFloaters);
-
-  select("#membrane-toggle").changed(function () { membraneOn = this.checked(); });
-  select("#membrane-gap-slider").input(function () { membraneGap = int(this.value()); });
-  select("#membrane-opacity-slider").input(function () { membraneOpacity = int(this.value()); });
-  select("#membrane-delay-slider").input(function () { membraneDelay = int(this.value()); });
-
   select("#play-pause").mousePressed(togglePlay);
   select("#record-btn").mousePressed(toggleRecording);
   select("#export-png").mousePressed(exportPNG);

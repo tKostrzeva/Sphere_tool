@@ -29,12 +29,12 @@ let floatT = 0;            // flow-field time
 let floatReady = false;    // spread particles once the canvas has its real size
 let cursorOver = false;    // is the mouse actually hovering the canvas?
 
-let noiseScaleVal = 28;
+let noiseScaleVal = 7;
 let noiseOffsetX = 0;
 let noiseOffsetY = 0;
-let noiseSpeed = 0.018;
+let noiseSpeed = 0.008;
 let glow = 45;
-let pointSize = 40;
+let pointSize = 7;
 let hollow = 60;
 let particleCount = 1400;
 let pullForce = 55;

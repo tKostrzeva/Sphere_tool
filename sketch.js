@@ -40,14 +40,14 @@ let gridDirs = [];
 let gRows = 0, gCols = 0;
 let gPX = null, gPY = null, gA = null;   // per-vertex projected x/y and rim alpha
 
-let noiseScaleVal = 7;
+let noiseScaleVal = 28;
 let noiseOffsetX = 0;
 let noiseOffsetY = 0;
-let noiseSpeed = 0.008;
+let noiseSpeed = 0.018;
 let glow = 45;
-let pointSize = 7;
+let pointSize = 40;
 let hollow = 60;
-let particleCount = 900;
+let particleCount = 1400;
 let pullForce = 55;
 let floatTrail = 45;
 let reach = 45;

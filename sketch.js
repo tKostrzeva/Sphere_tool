@@ -5,7 +5,7 @@
 // the frame rate drops, keeping it smooth on slow machines (full quality on
 // fast ones and always for the PNG/video export).
 
-const N_POINTS = 11000;    // points on the sphere shell
+const N_POINTS = 11000;    // default number of points on the sphere shell
 const N_BUCKETS = 32;      // pre-tinted sphere sprites (A→B gradient)
 const SPRITE_PX = 96;      // offscreen size of each sprite
 const DISP = 0.34;         // radial displacement as a fraction of base radius
@@ -31,6 +31,14 @@ let cursorOver = false;    // is the mouse actually hovering the canvas?
 // Adaptive quality governor.
 let qStride = 1;           // draw every qStride-th sphere point (1 = full quality)
 let fpsAccum = 0, fpsCount = 0;
+
+let sphereCount = N_POINTS;   // live point count (Density slider)
+let renderMode = 'points';    // points | wireframe | rings | meridians | fill | spikes
+
+// UV grid (rows × cols) — geometry for the line / fill render modes.
+let gridDirs = [];
+let gRows = 0, gCols = 0;
+let gPX = null, gPY = null, gA = null;   // per-vertex projected x/y and rim alpha
 
 let noiseScaleVal = 28;
 let noiseOffsetX = 0;
@@ -74,16 +82,36 @@ function currentRatio() {
   return document.getElementById('sel-ratio').value;
 }
 
-// Fibonacci sphere — an even spread of unit vectors over the sphere.
-function buildPoints() {
-  dirs = new Array(N_POINTS);
+// Fibonacci sphere — an even spread of `count` unit vectors over the sphere.
+function buildPoints(count) {
+  dirs = new Array(count);
   const ga = Math.PI * (3 - Math.sqrt(5));
-  for (let i = 0; i < N_POINTS; i++) {
-    const y = 1 - (i / (N_POINTS - 1)) * 2;
+  for (let i = 0; i < count; i++) {
+    const y = 1 - (i / (count - 1)) * 2;
     const r = Math.sqrt(Math.max(0, 1 - y * y));
     const th = i * ga;
     dirs[i] = { x: Math.cos(th) * r, y: y, z: Math.sin(th) * r };
   }
+}
+
+// UV lat/long grid whose resolution scales with the density slider (used by the
+// wireframe / rings / meridians / fill modes so they have proper connectivity).
+function buildGrid(density) {
+  gRows = Math.round(constrain(Math.sqrt(density) * 0.62, 14, 72));
+  gCols = gRows * 2;
+  gridDirs = new Array(gRows * gCols);
+  let idx = 0;
+  for (let r = 0; r < gRows; r++) {
+    const phi = (r / (gRows - 1)) * Math.PI;   // 0..π latitude
+    const y = Math.cos(phi), rr = Math.sin(phi);
+    for (let c = 0; c < gCols; c++) {
+      const th = (c / gCols) * Math.PI * 2;
+      gridDirs[idx++] = { x: Math.cos(th) * rr, y: y, z: Math.sin(th) * rr };
+    }
+  }
+  gPX = new Float32Array(gRows * gCols);
+  gPY = new Float32Array(gRows * gCols);
+  gA = new Float32Array(gRows * gCols);
 }
 
 // Allocate the floating-particle pool and scatter it around the sphere.
@@ -178,7 +206,8 @@ function setup() {
   colorMode(RGB, 255);
 
   noiseSeed(42);
-  buildPoints();
+  buildPoints(sphereCount);
+  buildGrid(sphereCount);
   buildFloaters();
   buildSprites();
   buildFloatSprites();
@@ -190,6 +219,8 @@ function setup() {
   select("#noise-speed-slider").input(function () { noiseSpeed = int(this.value()) * 0.001; });
   select("#glow-slider").input(function () { glow = int(this.value()); buildSprites(); });
   select("#pointsize-slider").input(function () { pointSize = int(this.value()); });
+  select("#density-slider").input(function () { sphereCount = int(this.value()); buildPoints(sphereCount); buildGrid(sphereCount); });
+  select("#render-mode").changed(function () { renderMode = this.value(); });
   select("#hollow-slider").input(function () { hollow = int(this.value()); });
 
   select("#count-slider").input(function () { particleCount = int(this.value()); });
@@ -254,15 +285,17 @@ function draw() {
   if (!floatReady) { resetFloaters(); floatReady = true; }
   updateFloaters();
 
-  // Adaptive quality: raise the point stride if the frame rate sags, lower it
-  // when there is headroom (recording pins full quality so exports stay clean).
-  fpsAccum += deltaTime; fpsCount++;
-  if (fpsCount >= 30) {
+  // Adaptive quality: raise the point stride only if the frame rate is *steadily*
+  // low, lower it when there is clear headroom. Frames that are hidden or stalled
+  // (tab in background, a one-off hitch) are ignored so the density never jumps
+  // around on a machine that is actually keeping up.
+  if (!document.hidden && deltaTime > 0 && deltaTime < 100) { fpsAccum += deltaTime; fpsCount++; }
+  if (fpsCount >= 50 && !isRecording) {
     const fps = 1000 / (fpsAccum / fpsCount);
-    if (!isRecording) {
-      if (fps < 48 && qStride < 4) qStride++;
-      else if (fps > 57 && qStride > 1) qStride--;
-    }
+    if (fps < 38 && qStride < 4) qStride++;
+    else if (fps > 55 && qStride > 1) qStride--;
+    fpsAccum = 0; fpsCount = 0;
+  } else if (fpsCount >= 50) {
     fpsAccum = 0; fpsCount = 0;
   }
 
@@ -387,7 +420,10 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
   const rimPow = map(hollow, 0, 100, 0.15, 4.0);
 
   const cyR = Math.cos(rot), syR = Math.sin(rot);
-  const tilt = 0.42, ct = Math.cos(tilt), st = Math.sin(tilt);
+  // Steep tilt: the auto-spin is around the pole axis, so tilting that axis into
+  // the screen puts both (antipodal) poles near the disc centre, where the hollow
+  // fade hides the "vortex" where the lines converge — while the spin stays lively.
+  const tilt = 1.3, ct = Math.cos(tilt), st = Math.sin(tilt);
 
   // Background.
   ctx.globalCompositeOperation = 'source-over';
@@ -398,45 +434,61 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
   ctx.globalCompositeOperation = 'lighter';
 
   // ── Sphere shell + membrane ──
-  const drawMemb = membraneOn && membAlpha > 0;
-  for (let i = 0, k = 0; i < N_POINTS; i += stride, k++) {
-    const d = dirs[i];
-    const n = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
-    const rBase = R * (1 + (n - 0.5) * 2 * DISP);
+  const geo = { cx, cy, R, focal, freq, offX, offY, rimPow, gapWorld, membAlpha,
+                cyR, syR, ct, st, minDim, sizeComp, stride };
+  if (renderMode === 'points') {
+    const drawMemb = membraneOn && membAlpha > 0;
+    for (let i = 0, k = 0; i < sphereCount; i += stride, k++) {
+      const d = dirs[i];
+      const n = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
+      const rBase = R * (1 + (n - 0.5) * 2 * DISP);
 
-    const rx = d.x * cyR + d.z * syR;
-    const rz = -d.x * syR + d.z * cyR;
-    const ry = d.y * ct - rz * st;
-    const rz2 = d.y * st + rz * ct;
+      const rx = d.x * cyR + d.z * syR;
+      const rz = -d.x * syR + d.z * cyR;
+      const ry = d.y * ct - rz * st;
+      const rz2 = d.y * st + rz * ct;
 
-    const rim = 1 - Math.abs(rz2);
-    const facing = map(rz2, -1, 1, 0.55, 1.0);
-    const alpha = Math.pow(rim, rimPow) * facing;
-    if (alpha < 0.004) continue;
+      const rim = 1 - Math.abs(rz2);
+      const facing = map(rz2, -1, 1, 0.55, 1.0);
+      const alpha = Math.pow(rim, rimPow) * facing;
+      if (alpha < 0.004) continue;
 
-    const bucket = Math.min(N_BUCKETS - 1, Math.max(0, Math.round(n * (N_BUCKETS - 1))));
+      const bucket = Math.min(N_BUCKETS - 1, Math.max(0, Math.round(n * (N_BUCKETS - 1))));
 
-    // Membrane — delayed-noise wobble, half density (every other drawn point;
-    // it is a soft blur so the missing half is invisible, but saves a big draw).
-    if (drawMemb && (k & 1) === 0) {
-      const nm = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + membNT);
-      const rm = R * (1 + (nm - 0.5) * 2 * DISP) + gapWorld;
-      const perspM = focal / (focal - rz2 * rm);
-      const mx = cx + rx * rm * perspM, my = cy + ry * rm * perspM;
-      const ms = membSize * perspM;
-      const bm = Math.min(N_BUCKETS - 1, Math.max(0, Math.round(nm * (N_BUCKETS - 1))));
-      ctx.globalAlpha = alpha * membAlpha;
-      ctx.drawImage(glowSprites[bm], mx - ms / 2, my - ms / 2, ms, ms);
+      // Membrane — delayed-noise wobble, half density (every other drawn point;
+      // it is a soft blur so the missing half is invisible, but saves a big draw).
+      if (drawMemb && (k & 1) === 0) {
+        const nm = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + membNT);
+        const rm = R * (1 + (nm - 0.5) * 2 * DISP) + gapWorld;
+        const perspM = focal / (focal - rz2 * rm);
+        const mx = cx + rx * rm * perspM, my = cy + ry * rm * perspM;
+        const ms = membSize * perspM;
+        const bm = Math.min(N_BUCKETS - 1, Math.max(0, Math.round(nm * (N_BUCKETS - 1))));
+        ctx.globalAlpha = alpha * membAlpha;
+        ctx.drawImage(glowSprites[bm], mx - ms / 2, my - ms / 2, ms, ms);
+      }
+
+      // Point — soft glow + crisp core (unchanged v07 look).
+      const persp = focal / (focal - rz2 * rBase);
+      const sx = cx + rx * rBase * persp, sy = cy + ry * rBase * persp;
+      const gs = glowSize * persp, cs = coreSize * persp;
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(glowSprites[bucket], sx - gs / 2, sy - gs / 2, gs, gs);
+      ctx.globalAlpha = Math.min(1, alpha * 1.35);
+      ctx.drawImage(coreSprites[bucket], sx - cs / 2, sy - cs / 2, cs, cs);
     }
-
-    // Point — soft glow + crisp core (unchanged v07 look).
-    const persp = focal / (focal - rz2 * rBase);
-    const sx = cx + rx * rBase * persp, sy = cy + ry * rBase * persp;
-    const gs = glowSize * persp, cs = coreSize * persp;
-    ctx.globalAlpha = alpha;
-    ctx.drawImage(glowSprites[bucket], sx - gs / 2, sy - gs / 2, gs, gs);
-    ctx.globalAlpha = Math.min(1, alpha * 1.35);
-    ctx.drawImage(coreSprites[bucket], sx - cs / 2, sy - cs / 2, cs, cs);
+  } else if (renderMode === 'spikes') {
+    drawSpikes(ctx, geo, noiseT, 0, 1);
+  } else {
+    // Grid line / fill modes.
+    const rowCols = gridRowColors();
+    ctx.lineCap = 'round';
+    if (membraneOn && membAlpha > 0) {
+      projectGrid(geo, membNT, gapWorld);
+      drawGridMode(ctx, geo, rowCols, membAlpha * 0.75);
+    }
+    projectGrid(geo, noiseT, 0);
+    drawGridMode(ctx, geo, rowCols, 1);
   }
 
   // ── Floating particles (soft glow + crisp core, full density) ──
@@ -457,6 +509,129 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
 
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ── Alternate render modes (wireframe / rings / meridians / fill / spikes) ── */
+
+// One colour per latitude row, lerped along the A→B gradient.
+function gridRowColors() {
+  const ca = color(document.getElementById('colorAPick').value);
+  const cb = color(document.getElementById('colorBPick').value);
+  const out = new Array(gRows);
+  for (let r = 0; r < gRows; r++) {
+    const c = lerpColor(ca, cb, gRows > 1 ? r / (gRows - 1) : 0);
+    out[r] = `rgb(${red(c) | 0},${green(c) | 0},${blue(c) | 0})`;
+  }
+  return out;
+}
+
+// Project every grid vertex for a given noise time / radius offset into gPX/gPY/gA.
+function projectGrid(g, useT, extraR) {
+  const N = gRows * gCols;
+  for (let i = 0; i < N; i++) {
+    const d = gridDirs[i];
+    const n = noise(d.x * g.freq + g.offX, d.y * g.freq + g.offY, d.z * g.freq + useT);
+    const rr = g.R * (1 + (n - 0.5) * 2 * DISP) + extraR;
+    const rx = d.x * g.cyR + d.z * g.syR;
+    const rz = -d.x * g.syR + d.z * g.cyR;
+    const ry = d.y * g.ct - rz * g.st;
+    const rz2 = d.y * g.st + rz * g.ct;
+    const persp = g.focal / (g.focal - rz2 * rr);
+    gPX[i] = g.cx + rx * rr * persp;
+    gPY[i] = g.cy + ry * rr * persp;
+    const rim = 1 - Math.abs(rz2);
+    gA[i] = Math.pow(rim, g.rimPow) * map(rz2, -1, 1, 0.55, 1.0);
+  }
+}
+
+// A glowing segment: a wide faint halo pass + a thin bright core pass (additive).
+function glowLine(ctx, x0, y0, x1, y1, a, wCore, wHalo) {
+  if (a <= 0.004) return;
+  ctx.globalAlpha = a * 0.28; ctx.lineWidth = wHalo;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.globalAlpha = Math.min(1, a); ctx.lineWidth = wCore;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+}
+
+function drawGridMode(ctx, g, rowCols, alphaScale) {
+  const wCore = g.minDim * 0.0016 * g.sizeComp * (0.6 + glow / 140);
+  const wHalo = wCore * 4.5;
+  const step = Math.max(1, g.stride);
+
+  if (renderMode === 'fill') {
+    // Translucent glowing shell — additive quads shaded by latitude & facing.
+    for (let r = 0; r < gRows - 1; r += step) {
+      ctx.fillStyle = rowCols[r];
+      const b0 = r * gCols, b1 = (r + 1) * gCols;
+      for (let c = 0; c < gCols; c += step) {
+        const c2 = (c + step) % gCols;
+        const i0 = b0 + c, i1 = b0 + c2, i2 = b1 + c2, i3 = b1 + c;
+        const a = 0.25 * (gA[i0] + gA[i1] + gA[i2] + gA[i3]);
+        if (a < 0.012) continue;
+        ctx.globalAlpha = Math.min(1, a * 0.55 * alphaScale);
+        ctx.beginPath();
+        ctx.moveTo(gPX[i0], gPY[i0]); ctx.lineTo(gPX[i1], gPY[i1]);
+        ctx.lineTo(gPX[i2], gPY[i2]); ctx.lineTo(gPX[i3], gPY[i3]);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+    return;
+  }
+
+  const rings = renderMode === 'rings' || renderMode === 'wireframe';
+  const meridians = renderMode === 'meridians' || renderMode === 'wireframe';
+  const mStep = renderMode === 'wireframe' ? step * 2 : step;   // thin out wireframe meridians
+
+  if (rings) {
+    for (let r = 0; r < gRows; r += step) {
+      ctx.strokeStyle = rowCols[r];
+      const b = r * gCols;
+      for (let c = 0; c < gCols; c++) {
+        const i0 = b + c, i1 = b + ((c + 1) % gCols);
+        glowLine(ctx, gPX[i0], gPY[i0], gPX[i1], gPY[i1], 0.5 * (gA[i0] + gA[i1]) * alphaScale, wCore, wHalo);
+      }
+    }
+  }
+  if (meridians) {
+    for (let c = 0; c < gCols; c += mStep) {
+      for (let r = 0; r < gRows - 1; r++) {
+        const i0 = r * gCols + c, i1 = (r + 1) * gCols + c;
+        ctx.strokeStyle = rowCols[r];
+        glowLine(ctx, gPX[i0], gPY[i0], gPX[i1], gPY[i1], 0.5 * (gA[i0] + gA[i1]) * alphaScale, wCore, wHalo);
+      }
+    }
+  }
+}
+
+// Radial glowing lines from an inner core out to a thinned set of Fibonacci
+// points (many overlapping additive lines would blow out to white).
+function drawSpikes(ctx, g, useT, extraR, alphaScale) {
+  const wCore = g.minDim * 0.0012 * g.sizeComp * (0.6 + glow / 140);
+  const wHalo = wCore * 3.2;
+  const ca = color(document.getElementById('colorAPick').value);
+  const cb = color(document.getElementById('colorBPick').value);
+  const innerF = 0.34;
+  const spikeStep = Math.max(g.stride, Math.ceil(sphereCount / 1300));
+  alphaScale *= 0.5;
+  for (let i = 0; i < sphereCount; i += spikeStep) {
+    const d = dirs[i];
+    const n = noise(d.x * g.freq + g.offX, d.y * g.freq + g.offY, d.z * g.freq + useT);
+    const rOut = g.R * (1 + (n - 0.5) * 2 * DISP) + extraR;
+    const rIn = g.R * innerF + extraR;
+    const rx = d.x * g.cyR + d.z * g.syR;
+    const rz = -d.x * g.syR + d.z * g.cyR;
+    const ry = d.y * g.ct - rz * g.st;
+    const rz2 = d.y * g.st + rz * g.ct;
+    const rim = 1 - Math.abs(rz2);
+    const a = Math.pow(rim, g.rimPow) * map(rz2, -1, 1, 0.55, 1.0) * alphaScale;
+    if (a < 0.006) continue;
+    const pO = g.focal / (g.focal - rz2 * rOut), pI = g.focal / (g.focal - rz2 * rIn);
+    const ox = g.cx + rx * rOut * pO, oy = g.cy + ry * rOut * pO;
+    const ix = g.cx + rx * rIn * pI, iy = g.cy + ry * rIn * pI;
+    const c = lerpColor(ca, cb, (d.y + 1) * 0.5);
+    ctx.strokeStyle = `rgb(${red(c) | 0},${green(c) | 0},${blue(c) | 0})`;
+    glowLine(ctx, ix, iy, ox, oy, a, wCore, wHalo);
+  }
 }
 
 // Export the current frame as a transparent PNG at 4K (3840 px long edge).

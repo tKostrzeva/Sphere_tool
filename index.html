@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sphere | v08</title>
+  <title>Sphere | v09</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
     <button class="topbar-toggle" id="panelToggle">
       <span id="toggleArrow">←</span> options
     </button>
-    <span class="topbar-title">Sphere | v08</span>
+    <span class="topbar-title">Sphere | v09</span>
   </header>
 
   <div class="layout">
@@ -66,6 +66,18 @@
         <label class="section-label">Render</label>
 
         <div class="ctrl">
+          <label class="ctrl-label">Render mode</label>
+          <select id="render-mode">
+            <option value="points" selected>Points</option>
+            <option value="wireframe">Wireframe</option>
+            <option value="rings">Latitude rings</option>
+            <option value="meridians">Meridians</option>
+            <option value="fill">Filled shell</option>
+            <option value="spikes">Spikes</option>
+          </select>
+        </div>
+
+        <div class="ctrl">
           <label class="ctrl-label">Glow intensity <span data-val="glow-slider"></span></label>
           <input type="range" class="slider" id="glow-slider" min="1" max="100" value="45">
         </div>
@@ -73,6 +85,11 @@
         <div class="ctrl">
           <label class="ctrl-label">Point size <span data-val="pointsize-slider"></span></label>
           <input type="range" class="slider" id="pointsize-slider" min="1" max="100" value="40">
+        </div>
+
+        <div class="ctrl">
+          <label class="ctrl-label">Density <span data-val="density-slider"></span></label>
+          <input type="range" class="slider" id="density-slider" min="1000" max="16000" step="100" value="11000">
         </div>
 
         <div class="ctrl">

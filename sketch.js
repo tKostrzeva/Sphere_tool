@@ -14,6 +14,7 @@ const MAX_FLOAT = 3000;    // capacity of the floating-particle pool
 let dirs = [];             // unit direction of each sphere point
 let glowSprites = [];      // soft bloom, one per colour bucket
 let coreSprites = [];      // crisp grain, one per colour bucket
+let membraneSprite = null; // soft bloom in the membrane colour (single colour)
 
 // Floating particles (screen space).
 let fx, fy, fvx, fvy;      // position / velocity
@@ -44,7 +45,8 @@ let gPX = null, gPY = null, gA = null;   // per-vertex projected x/y and rim alp
 let sphereCount, renderMode;
 let noiseScaleVal, noiseOffsetX, noiseOffsetY, noiseSpeed;
 let glow, pointSize, hollow;
-let particleCount, pullForce, floatTrail, reach, breakthrough;
+let gradDiameter, gradDensity, particleBlend;
+let particlesOn, particleCount, pullForce, floatTrail, reach, cloudSize, breakthrough;
 let membraneOn, membraneGap, membraneOpacity, membraneDelay;
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -59,6 +61,7 @@ let recordedChunks = [];
 let isRecording = false;
 let recordingHdCanvas = null;
 let recordingHdCtx = null;
+let recTimer = null, recStartMs = 0;   // in-button recording seconds counter
 
 function calcCanvas(ratioStr) {
   const [a, b] = ratioStr.split(':').map(Number);
@@ -173,6 +176,12 @@ function buildSprites() {
       [0.0, 0.95], [0.5, 0.9], [0.72, 0.28], [1.0, 0]
     ]);
   }
+
+  // Membrane bloom in its own colour.
+  const mc = color(document.getElementById('membraneColorPick').value);
+  membraneSprite = makeSprite(Math.round(red(mc)), Math.round(green(mc)), Math.round(blue(mc)), [
+    [0.0, gCore], [0.30, gCore * 0.5], [0.6, gCore * 0.12], [1.0, 0]
+  ]);
 }
 
 // Single-colour sprite pair (soft glow + crisp core) in the given colour.
@@ -220,10 +229,15 @@ function setup() {
   bind('density-slider', v => sphereCount = +v, () => { buildPoints(sphereCount); buildGrid(sphereCount); });
   bind('render-mode', v => renderMode = v);
   bind('hollow-slider', v => hollow = +v);
+  bind('grad-diameter-slider', v => gradDiameter = +v);
+  bind('grad-density-slider', v => gradDensity = +v);
+  bind('particle-blend', v => particleBlend = v);
+  bind('particles-toggle', v => particlesOn = v, null, true);
   bind('count-slider', v => particleCount = +v);
   bind('pull-slider', v => pullForce = +v);
   bind('elastic-slider', v => floatTrail = +v);
   bind('reach-slider', v => reach = +v);
+  bind('cloud-size-slider', v => cloudSize = +v);
   bind('breakthrough-slider', v => breakthrough = +v);
   bind('membrane-toggle', v => membraneOn = v, null, true);
   bind('membrane-gap-slider', v => membraneGap = +v);
@@ -286,7 +300,7 @@ function draw() {
   membNT = delayedNoiseT(now, membraneDelay);
 
   if (!floatReady) { resetFloaters(); floatReady = true; }
-  updateFloaters();
+  if (particlesOn) updateFloaters();
 
   // Adaptive quality: raise the point stride only if the frame rate is *steadily*
   // low, lower it when there is clear headroom. Frames that are hidden or stalled
@@ -323,11 +337,11 @@ function updateFloaters() {
 
   const overC = cursorOver;
   const captureR = map(reach, 1, 100, minDim * 0.18, minDim * 0.65);
-  const attract = map(pullForce, 1, 100, 0.02, 0.12);
-  const followDamp = map(floatTrail, 1, 100, 0.88, 0.965);  // floatiness while following the cursor
+  const grabAmt = map(pullForce, 1, 100, 0.09, 0.22);       // how firmly captured particles are pulled into their cloud slot
   const returnEase = map(floatTrail, 1, 100, 0.09, 0.03);   // higher trail = slower, softer return
   const maxSp = minDim * 0.022;
   const wanderR = minDim * 0.025;
+  const cloudR = captureR * map(cloudSize, 1, 100, 0.0, 1.4);   // 0 = tight ball on the cursor … large = wide filled cloud
   const frac = breakthrough / 100;
   const cursorInside = overC && Math.hypot(mouseX - cx, mouseY - cy) < Rmem * 1.1;
 
@@ -343,20 +357,28 @@ function updateFloaters() {
     const canFollow = fInside[i] ? cursorInside : overC;
     let w = 0;
     if (canFollow) {
-      const dx = mouseX - fx[i], dy = mouseY - fy[i];
-      const d = Math.hypot(dx, dy);
-      if (d < captureR) { w = 1 - d / captureR; fvx[i] += dx * attract * w; fvy[i] += dy * attract * w; }
+      const d = Math.hypot(mouseX - fx[i], mouseY - fy[i]);
+      if (d < captureR) {
+        w = 1 - d / captureR;
+        // Ease toward a personal slot that fills the cloud disc around the cursor
+        // (√fesc = even fill, no empty centre). Cloud size 0 → every slot is the
+        // cursor → a tight ball; larger → a wide filled cloud.
+        const ang = i * 2.39996 + floatT * 0.5;
+        const rad = cloudR * Math.sqrt(fesc[i]);
+        const tx = mouseX + Math.cos(ang) * rad, ty = mouseY + Math.sin(ang) * rad;
+        const grab = grabAmt * w;
+        fx[i] += (tx - fx[i]) * grab;
+        fy[i] += (ty - fy[i]) * grab;
+      }
     }
 
-    // Damp velocity — floaty while following, heavy once released so there is no
-    // momentum left to overshoot with.
-    const dmp = 0.80 + (followDamp - 0.80) * w;
-    fvx[i] *= dmp; fvy[i] *= dmp;
+    // Residual velocity (from membrane slides / edges) just decays.
+    fvx[i] *= 0.85; fvy[i] *= 0.85;
     fx[i] += fvx[i]; fy[i] += fvy[i];
 
-    // Return home by a plain exponential ease (no spring → no elastic rebound),
-    // suppressed while the cursor owns the particle.
-    const ease = returnEase * (1 - w);
+    // Ease back home when the cursor isn't holding it (no spring → no rebound).
+    // (1-w)² so even a moderately-captured particle commits to its cloud slot.
+    const ease = returnEase * (1 - w) * (1 - w);
     fx[i] += (hx[i] - fx[i]) * ease;
     fy[i] += (hy[i] - fy[i]) * ease;
 
@@ -434,6 +456,21 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
   if (opaque) { ctx.fillStyle = 'rgb(4,5,12)'; ctx.fillRect(0, 0, W, H); }
   else        { ctx.clearRect(0, 0, W, H); }
 
+  // Radial background gradient — chosen colour at the centre fading to fully
+  // transparent at the edge. Diameter = radius; density = strength / spread.
+  if (gradDensity > 0) {
+    const gc = color(document.getElementById('gradColorPick').value);
+    const gr = Math.round(red(gc)), gg = Math.round(green(gc)), gb = Math.round(blue(gc));
+    const gRad = Math.max(1, minDim * map(gradDiameter, 0, 100, 0.1, 1.6));
+    const a0 = map(gradDensity, 0, 100, 0.0, 1.0);
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, gRad);
+    grad.addColorStop(0.0, `rgba(${gr},${gg},${gb},${a0})`);
+    grad.addColorStop(map(gradDensity, 0, 100, 0.15, 0.7), `rgba(${gr},${gg},${gb},${a0 * 0.35})`);
+    grad.addColorStop(1.0, `rgba(${gr},${gg},${gb},0)`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+  }
+
   ctx.globalCompositeOperation = 'lighter';
 
   // ── Sphere shell + membrane ──
@@ -466,9 +503,8 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
         const perspM = focal / (focal - rz2 * rm);
         const mx = cx + rx * rm * perspM, my = cy + ry * rm * perspM;
         const ms = membSize * perspM;
-        const bm = Math.min(N_BUCKETS - 1, Math.max(0, Math.round(nm * (N_BUCKETS - 1))));
         ctx.globalAlpha = alpha * membAlpha;
-        ctx.drawImage(glowSprites[bm], mx - ms / 2, my - ms / 2, ms, ms);
+        ctx.drawImage(membraneSprite, mx - ms / 2, my - ms / 2, ms, ms);
       }
 
       // Point — soft glow + crisp core (unchanged v07 look).
@@ -487,16 +523,19 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
     const rowCols = gridRowColors();
     ctx.lineCap = 'round';
     if (membraneOn && membAlpha > 0) {
+      const mHex = document.getElementById('membraneColorPick').value;
+      const membCols = new Array(gRows).fill(mHex);
       projectGrid(geo, membNT, gapWorld);
-      drawGridMode(ctx, geo, rowCols, membAlpha * 0.75);
+      drawGridMode(ctx, geo, membCols, membAlpha * 0.75);
     }
     projectGrid(geo, noiseT, 0);
     drawGridMode(ctx, geo, rowCols, 1);
   }
 
   // ── Floating particles (soft glow + crisp core, full density) ──
+  ctx.globalCompositeOperation = particleBlend;   // per-particle blend mode
   const fGlow = minDim * 0.018, fCore = minDim * 0.0055;
-  for (let i = 0; i < particleCount; i++) {
+  for (let i = 0; particlesOn && i < particleCount; i++) {
     const al = fAlpha[i];
     if (al <= 0.004) continue;
     const sx = cx + (fx[i] - width / 2) * scale;
@@ -704,15 +743,28 @@ function startRecording() {
   };
   mediaRecorder.start(100);
   isRecording = true;
-  document.getElementById('record-btn').textContent = '⏹ Stop rec';
-  document.getElementById('record-btn').classList.add('recording');
+  const btn = document.getElementById('record-btn');
+  btn.classList.add('recording');
+  // Live seconds counter in the button while recording.
+  recStartMs = performance.now();
+  const tick = () => { btn.textContent = '⏹ ' + fmtDur((performance.now() - recStartMs) / 1000); };
+  tick();
+  recTimer = setInterval(tick, 250);
+}
+
+// Format seconds as m:ss.
+function fmtDur(sec) {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return m + ':' + String(s).padStart(2, '0');
 }
 
 function stopRecording() {
   if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   isRecording = false;
-  document.getElementById('record-btn').textContent = '⏺ Record';
-  document.getElementById('record-btn').classList.remove('recording');
+  if (recTimer) { clearInterval(recTimer); recTimer = null; }
+  const btn = document.getElementById('record-btn');
+  btn.textContent = '⏺ Record';
+  btn.classList.remove('recording');
 }
 
 function windowResized() {

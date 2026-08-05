@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sphere | v09</title>
+  <title>Sphere | v10</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
     <button class="topbar-toggle" id="panelToggle">
       <span id="toggleArrow">←</span> options
     </button>
-    <span class="topbar-title">Sphere | v09</span>
+    <span class="topbar-title">Sphere | v10</span>
   </header>
 
   <div class="layout">
@@ -79,7 +79,7 @@
 
         <div class="ctrl">
           <label class="ctrl-label">Glow intensity <span data-val="glow-slider"></span></label>
-          <input type="range" class="slider" id="glow-slider" min="1" max="100" value="43">
+          <input type="range" class="slider" id="glow-slider" min="1" max="100" value="44">
         </div>
 
         <div class="ctrl">
@@ -94,7 +94,7 @@
 
         <div class="ctrl">
           <label class="ctrl-label">Hollow <span data-val="hollow-slider"></span></label>
-          <input type="range" class="slider" id="hollow-slider" min="0" max="100" value="60">
+          <input type="range" class="slider" id="hollow-slider" min="0" max="100" value="50">
         </div>
 
         <div class="ctrl">
@@ -112,7 +112,35 @@
           </div>
         </div>
 
+        <label class="section-label">Background</label>
+
+        <div class="ctrl">
+          <label class="ctrl-label">Gradient color</label>
+          <div class="color-row">
+            <input type="color" class="color-swatch" id="gradColorPick" value="#7D26E6">
+            <input type="text"  class="hex-in" id="gradColor-hex" value="#7D26E6" maxlength="7" spellcheck="false">
+          </div>
+        </div>
+
+        <div class="ctrl">
+          <label class="ctrl-label">Gradient diameter <span data-val="grad-diameter-slider"></span></label>
+          <input type="range" class="slider" id="grad-diameter-slider" min="0" max="100" value="50">
+        </div>
+
+        <div class="ctrl">
+          <label class="ctrl-label">Gradient density <span data-val="grad-density-slider"></span></label>
+          <input type="range" class="slider" id="grad-density-slider" min="0" max="100" value="60">
+        </div>
+
         <label class="section-label">Particles</label>
+
+        <div class="ctrl row">
+          <label class="ctrl-label">Enabled</label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="particles-toggle" checked>
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
 
         <div class="ctrl">
           <label class="ctrl-label">Count <span data-val="count-slider"></span></label>
@@ -120,10 +148,25 @@
         </div>
 
         <div class="ctrl">
+          <label class="ctrl-label">Blend mode</label>
+          <select id="particle-blend">
+            <option value="lighter">Add (glow)</option>
+            <option value="screen">Screen</option>
+            <option value="source-over">Normal</option>
+            <option value="lighten">Lighten</option>
+            <option value="color-dodge" selected>Color dodge</option>
+            <option value="overlay">Overlay</option>
+            <option value="difference">Difference</option>
+            <option value="exclusion">Exclusion</option>
+            <option value="multiply">Multiply</option>
+          </select>
+        </div>
+
+        <div class="ctrl">
           <label class="ctrl-label">Color</label>
           <div class="color-row">
-            <input type="color" class="color-swatch" id="floatColorPick" value="#444444">
-            <input type="text"  class="hex-in" id="floatColor-hex" value="#444444" maxlength="7" spellcheck="false">
+            <input type="color" class="color-swatch" id="floatColorPick" value="#929292">
+            <input type="text"  class="hex-in" id="floatColor-hex" value="#929292" maxlength="7" spellcheck="false">
           </div>
         </div>
 
@@ -137,7 +180,7 @@
 
         <div class="ctrl">
           <label class="ctrl-label">Pull force <span data-val="pull-slider"></span></label>
-          <input type="range" class="slider" id="pull-slider" min="1" max="100" value="1">
+          <input type="range" class="slider" id="pull-slider" min="0" max="100" value="1">
         </div>
 
         <div class="ctrl">
@@ -148,6 +191,11 @@
         <div class="ctrl">
           <label class="ctrl-label">Reach <span data-val="reach-slider"></span></label>
           <input type="range" class="slider" id="reach-slider" min="1" max="100" value="45">
+        </div>
+
+        <div class="ctrl">
+          <label class="ctrl-label">Cloud size <span data-val="cloud-size-slider"></span></label>
+          <input type="range" class="slider" id="cloud-size-slider" min="1" max="100" value="6">
         </div>
 
         <div class="ctrl">
@@ -170,6 +218,14 @@
         </div>
 
         <div class="ctrl">
+          <label class="ctrl-label">Color</label>
+          <div class="color-row">
+            <input type="color" class="color-swatch" id="membraneColorPick" value="#7D26E6">
+            <input type="text"  class="hex-in" id="membraneColor-hex" value="#7D26E6" maxlength="7" spellcheck="false">
+          </div>
+        </div>
+
+        <div class="ctrl">
           <label class="ctrl-label">Gap <span data-val="membrane-gap-slider"></span></label>
           <input type="range" class="slider" id="membrane-gap-slider" min="0" max="100" value="30">
         </div>
@@ -181,7 +237,7 @@
 
         <div class="ctrl">
           <label class="ctrl-label">Delay ms <span data-val="membrane-delay-slider"></span></label>
-          <input type="range" class="slider" id="membrane-delay-slider" min="0" max="4000" step="50" value="1500">
+          <input type="range" class="slider" id="membrane-delay-slider" min="0" max="4000" step="50" value="200">
         </div>
 
         <div class="btn-stack">
@@ -238,6 +294,8 @@
     wireColor('colorBPick', 'colorB-hex');
     wireColor('floatColorPick', 'floatColor-hex');
     wireColor('insideColorPick', 'insideColor-hex');
+    wireColor('membraneColorPick', 'membraneColor-hex');
+    wireColor('gradColorPick', 'gradColor-hex');
   </script>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>

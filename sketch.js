@@ -29,10 +29,6 @@ let floatT = 0;            // flow-field time
 let floatReady = false;    // spread particles once the canvas has its real size
 let cursorOver = false;    // is the mouse actually hovering the canvas?
 
-// Adaptive quality governor.
-let qStride = 1;           // draw every qStride-th sphere point (1 = full quality)
-let fpsAccum = 0, fpsCount = 0;
-
 // UV grid (rows × cols) — geometry for the line / fill render modes.
 let gridDirs = [];
 let gRows = 0, gCols = 0;
@@ -302,21 +298,10 @@ function draw() {
   if (!floatReady) { resetFloaters(); floatReady = true; }
   if (particlesOn) updateFloaters();
 
-  // Adaptive quality: raise the point stride only if the frame rate is *steadily*
-  // low, lower it when there is clear headroom. Frames that are hidden or stalled
-  // (tab in background, a one-off hitch) are ignored so the density never jumps
-  // around on a machine that is actually keeping up.
-  if (!document.hidden && deltaTime > 0 && deltaTime < 100) { fpsAccum += deltaTime; fpsCount++; }
-  if (fpsCount >= 50 && !isRecording) {
-    const fps = 1000 / (fpsAccum / fpsCount);
-    if (fps < 38 && qStride < 4) qStride++;
-    else if (fps > 55 && qStride > 1) qStride--;
-    fpsAccum = 0; fpsCount = 0;
-  } else if (fpsCount >= 50) {
-    fpsAccum = 0; fpsCount = 0;
-  }
-
-  renderScene(drawingContext, width, height, true, 1, isRecording ? 1 : qStride);
+  // Point density is exactly what the Density slider says — no automatic quality
+  // scaling (it used to nudge the stride on frame-rate dips, which read as the
+  // density "jumping" on its own). Lower Density manually on a slow machine.
+  renderScene(drawingContext, width, height, true, 1, 1);
 
   if (isRecording && recordingHdCtx) {
     recordingHdCtx.clearRect(0, 0, recordingHdCanvas.width, recordingHdCanvas.height);

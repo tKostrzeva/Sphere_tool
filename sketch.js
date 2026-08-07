@@ -13,7 +13,6 @@ const MAX_FLOAT = 3000;    // capacity of the floating-particle pool
 
 let dirs = [];             // unit direction of each sphere point
 let coreSprites = [];      // merged crisp-core + glow sprite, one per colour bucket
-let membraneSprite = null; // soft bloom in the membrane colour (single colour)
 
 // Floating particles (screen space).
 let fx, fy, fvx, fvy;      // position / velocity
@@ -38,6 +37,7 @@ let gPX = null, gPY = null, gA = null;   // per-vertex projected x/y and rim alp
 let noiseField = null;     // precomputed noise per sphere point (static shape)
 let gridNoiseField = null; // precomputed noise per grid vertex (static shape)
 let lowBuf = null, lowCtx = null;   // offscreen buffer for the Render-scale down-render
+let membBuf = null, membBufCtx = null;   // offscreen buffer for the (near-free) membrane blur
 
 // ── UI-controlled settings ──────────────────────────────────────────────────
 // These are ALL initialised from the matching input in index.html at setup()
@@ -48,7 +48,7 @@ let noiseScaleVal, noiseOffsetX, noiseOffsetY, noiseSpeed;
 let glow, pointSize, hollow, renderScale, staticShape;
 let gradDiameter, gradDensity, particleBlend;
 let particlesOn, particleCount, pullForce, floatTrail, reach, cloudSize, breakthrough;
-let membraneOn, membraneGap, membraneOpacity, membraneDelay;
+let membraneOn, membraneGap, membraneOpacity, membraneDelay, membGradDiameter, membGradDensity, membGradCenter, membBlur;
 // ─────────────────────────────────────────────────────────────────────────────
 
 let noiseHist = [];
@@ -195,12 +195,6 @@ function buildSprites() {
       [0.5, gCore * 0.35], [0.78, gCore * 0.1], [1.0, 0]
     ]);
   }
-
-  // Membrane bloom in its own colour.
-  const mc = color(document.getElementById('membraneColorPick').value);
-  membraneSprite = makeSprite(Math.round(red(mc)), Math.round(green(mc)), Math.round(blue(mc)), [
-    [0.0, gCore], [0.30, gCore * 0.5], [0.6, gCore * 0.12], [1.0, 0]
-  ]);
 }
 
 // Single-colour sprite pair (soft glow + crisp core) in the given colour.
@@ -266,6 +260,10 @@ function setup() {
   bind('membrane-toggle', v => membraneOn = v, null, true);
   bind('membrane-gap-slider', v => membraneGap = +v);
   bind('membrane-opacity-slider', v => membraneOpacity = +v);
+  bind('membrane-grad-diameter-slider', v => membGradDiameter = +v);
+  bind('membrane-grad-density-slider', v => membGradDensity = +v);
+  bind('membrane-grad-center-slider', v => membGradCenter = +v);
+  bind('membrane-blur-slider', v => membBlur = +v);
   bind('membrane-delay-slider', v => membraneDelay = +v);
 
   // Build geometry + sprites from the values just read.
@@ -467,7 +465,6 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
   // not fully, so slow machines also draw fewer pixels overall).
   const sizeComp = Math.pow(stride, 0.4);
   const glowSize = minDim * map(glow, 1, 100, 0.008, 0.030) * sizeComp;
-  const membSize = glowSize * 1.5 * Math.SQRT2;   // ×√2 to cover the half-density membrane
   const gapWorld = minDim * map(membraneGap, 0, 100, 0.0, 0.05);
   const membAlpha = membraneOpacity / 100;
   const rimPow = map(hollow, 0, 100, 0.15, 4.0);
@@ -501,12 +498,37 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
 
   ctx.globalCompositeOperation = 'lighter';
 
-  // ── Sphere shell + membrane ──
+  // ── Membrane: a single noise-shaped 2D blob filled with a radial gradient ──
+  // (one fill instead of ~5000 point sprites). Drawn behind the sphere.
   const geo = { cx, cy, R, focal, freq, offX, offY, rimPow, gapWorld, membAlpha,
                 cyR, syR, ct, st, minDim, sizeComp, stride };
+  if (membraneOn && membAlpha > 0) {
+    if (membBlur < 1) {
+      drawMembraneShape(ctx, geo);
+    } else {
+      // Blur ≈ free: render the single membrane fill into a small buffer and
+      // upscale it (down-sample + smooth = a soft blur). More blur = smaller
+      // buffer = even cheaper — no ctx.filter (which is slow on weak GPUs).
+      const bf = map(membBlur, 1, 100, 0.6, 0.1);
+      const bw = Math.max(2, Math.round(W * bf)), bh = Math.max(2, Math.round(H * bf));
+      if (!membBuf) { membBuf = document.createElement('canvas'); membBufCtx = membBuf.getContext('2d'); }
+      if (membBuf.width !== bw || membBuf.height !== bh) { membBuf.width = bw; membBuf.height = bh; }
+      const bmin = Math.min(bw, bh), bs = bmin / minDim;
+      membBufCtx.setTransform(1, 0, 0, 1, 0, 0);
+      membBufCtx.clearRect(0, 0, bw, bh);
+      membBufCtx.globalCompositeOperation = 'source-over';
+      drawMembraneShape(membBufCtx, { cx: bw / 2, cy: bh / 2, R: R * bs, minDim: bmin,
+        gapWorld: gapWorld * bs, freq, offX, offY, cyR, syR, ct, st, membAlpha });
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 1;
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(membBuf, 0, 0, W, H);
+    }
+  }
+
+  // ── Sphere shell ──
   if (renderMode === 'points') {
-    const drawMemb = membraneOn && membAlpha > 0;
-    for (let i = 0, k = 0; i < sphereCount; i += stride, k++) {
+    for (let i = 0; i < sphereCount; i += stride) {
       const d = dirs[i];
       const n = staticShape ? noiseField[i] : noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
       const rBase = R * (1 + (n - 0.5) * 2 * DISP);
@@ -523,18 +545,6 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
 
       const bucket = Math.min(N_BUCKETS - 1, Math.max(0, Math.round(n * (N_BUCKETS - 1))));
 
-      // Membrane — delayed-noise wobble, half density (every other drawn point;
-      // it is a soft blur so the missing half is invisible, but saves a big draw).
-      if (drawMemb && (k & 1) === 0) {
-        const nm = staticShape ? n : noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + membNT);
-        const rm = R * (1 + (nm - 0.5) * 2 * DISP) + gapWorld;
-        const perspM = focal / (focal - rz2 * rm);
-        const mx = cx + rx * rm * perspM, my = cy + ry * rm * perspM;
-        const ms = membSize * perspM;
-        ctx.globalAlpha = alpha * membAlpha;
-        ctx.drawImage(membraneSprite, mx - ms / 2, my - ms / 2, ms, ms);
-      }
-
       // Point — one merged sprite (crisp core + glow) = a single additive draw.
       const persp = focal / (focal - rz2 * rBase);
       const sx = cx + rx * rBase * persp, sy = cy + ry * rBase * persp;
@@ -545,17 +555,10 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
   } else if (renderMode === 'spikes') {
     drawSpikes(ctx, geo, noiseT, 0, 1);
   } else {
-    // Grid line / fill modes.
-    const rowCols = gridRowColors();
+    // Grid line / fill modes (membrane is the 2D blob above).
     ctx.lineCap = 'round';
-    if (membraneOn && membAlpha > 0) {
-      const mHex = document.getElementById('membraneColorPick').value;
-      const membCols = new Array(gRows).fill(mHex);
-      projectGrid(geo, membNT, gapWorld);
-      drawGridMode(ctx, geo, membCols, membAlpha * 0.75);
-    }
     projectGrid(geo, noiseT, 0);
-    drawGridMode(ctx, geo, rowCols, 1);
+    drawGridMode(ctx, geo, gridRowColors(), 1);
   }
 
   // ── Floating particles (soft glow + crisp core, full density) ──
@@ -577,6 +580,52 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
 
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
+}
+
+// Membrane as a single 2D noise-wobbled blob filled with a radial gradient
+// (membrane colour at the centre → fully transparent at the edge). One fill per
+// frame instead of thousands of point sprites. The wobble spins with the sphere.
+function drawMembraneShape(ctx, g) {
+  const cx = g.cx, cy = g.cy, minDim = g.minDim;
+  const R = g.R, gapWorld = g.gapWorld, freq = g.freq, offX = g.offX, offY = g.offY;
+  const cyR = g.cyR, syR = g.syR, ct = g.ct, st = g.st;
+  const RmemBase = R + gapWorld;
+  const M = 120;
+
+  // The outline traces the sphere's ACTUAL silhouette: for each screen angle the
+  // silhouette direction is (cosθ, sinθ, 0) in view space (z = 0, so it projects
+  // 1:1). Inverse-rotate it into object space to read the SAME noise the sphere
+  // uses — at membNT, so the delayed-wobble membrane still trails the shape.
+  ctx.beginPath();
+  for (let i = 0; i <= M; i++) {
+    const th = (i / M) * Math.PI * 2;
+    const vx = Math.cos(th), vy = Math.sin(th);
+    // inverse tilt-X: rz = -vy·st, dy = vy·ct, rx = vx ; then inverse rot-Y
+    const rz = -vy * st, dy = vy * ct, rx = vx;
+    const dx = rx * cyR - rz * syR, dz = rx * syR + rz * cyR;
+    const nval = noise(dx * freq + offX, dy * freq + offY, dz * freq + membNT);
+    const rr = R * (1 + (nval - 0.5) * 2 * DISP) + gapWorld;
+    const px = cx + vx * rr, py = cy + vy * rr;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+
+  const mc = color(document.getElementById('membraneColorPick').value);
+  const mr = Math.round(red(mc)), mg = Math.round(green(mc)), mb = Math.round(blue(mc));
+  // Reversed: transparent at the centre → colour at the edge of the shape.
+  // `center` moves the transparent core outward, so the colour can be squeezed
+  // into a thin, dense ring at the very edge (like the old point membrane).
+  const a0 = map(membGradDensity, 0, 100, 0.0, 1.0) * g.membAlpha;
+  const gRad = Math.max(1, RmemBase * map(membGradDiameter, 0, 100, 0.5, 1.6));
+  const inner = map(membGradCenter, 0, 100, 0.0, 0.95);   // transparent core out to this fraction
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, gRad);
+  grad.addColorStop(0.0, `rgba(${mr},${mg},${mb},0)`);
+  grad.addColorStop(inner, `rgba(${mr},${mg},${mb},0)`);
+  grad.addColorStop(inner + (1 - inner) * 0.5, `rgba(${mr},${mg},${mb},${a0 * 0.4})`);
+  grad.addColorStop(1.0, `rgba(${mr},${mg},${mb},${a0})`);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = grad;
+  ctx.fill();
 }
 
 /* ── Alternate render modes (wireframe / rings / meridians / fill / spikes) ── */

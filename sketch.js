@@ -1,20 +1,23 @@
-// Sphere v07 — an animated hollow point-sphere wrapped by a delayed "membrane"
-// shell, surrounded by free-floating particles. The particles drift around the
-// canvas; when the cursor is near they are drawn to it and follow it. The
-// membrane is a selective barrier: the "breakthrough" fraction of particles
-// penetrate into the sphere (and float around inside), the rest slide off it
-// and stay in floating mode. Particles are white while floating outside and
-// switch to the "inside" colour once they have been drawn into the sphere.
+// Sphere v08 — same as v07, tuned for weak GPUs. The additive canvas render is
+// fill-rate + draw-call bound, so: each point / particle is a single merged
+// sprite (bright core + glow baked in) instead of two draws; the membrane is
+// drawn at half density; and an adaptive governor raises the point stride when
+// the frame rate drops, keeping it smooth on slow machines (full quality on
+// fast ones and always for the PNG/video export).
 
-const N_POINTS = 11000;    // points on the sphere shell
+const N_POINTS = 11000;    // default number of points on the sphere shell
 const N_BUCKETS = 32;      // pre-tinted sphere sprites (A→B gradient)
 const SPRITE_PX = 96;      // offscreen size of each sprite
 const DISP = 0.34;         // radial displacement as a fraction of base radius
 const MAX_FLOAT = 3000;    // capacity of the floating-particle pool
 
 let dirs = [];             // unit direction of each sphere point
-let glowSprites = [];      // soft bloom, one per colour bucket
-let coreSprites = [];      // crisp grain, one per colour bucket
+let coreSprites = [];      // merged crisp-core + glow sprite, one per colour bucket
+let spRand = null;         // per-point random roll [0,1)
+let spOrder = null;        // point indices sorted by that roll (accents = the first N)
+let accentRank = null;     // inverse of spOrder: each point's rank (0 = first accent)
+let specialGlow = null;    // additive halo sprite for accents (luminous depth)
+let specialCore = null;    // shaded-orb sprite for accents (3D, keeps its colour)
 
 // Floating particles (screen space).
 let fx, fy, fvx, fvy;      // position / velocity
@@ -23,28 +26,39 @@ let hx, hy;                // home = anchor + a small wobble; the particle sprin
 let fesc;                  // fixed random threshold [0,1); low = penetrates first
 let fAlpha;                // opacity
 let fInside;               // 1 = the particle now lives (floats) inside the sphere
+let fchg;                  // escape charge: builds while an inside particle is pulled out
 let floatGlow = null, floatCore = null;  // outside (floating) particle sprites
 let insideGlow = null, insideCore = null; // inside (absorbed) particle sprites
 let floatT = 0;            // flow-field time
 let floatReady = false;    // spread particles once the canvas has its real size
 let cursorOver = false;    // is the mouse actually hovering the canvas?
 
-let noiseScaleVal = 7;
-let noiseOffsetX = 0;
-let noiseOffsetY = 0;
-let noiseSpeed = 0.008;
-let glow = 45;
-let pointSize = 7;
-let hollow = 60;
-let particleCount = 1400;
-let pullForce = 55;
-let floatTrail = 45;
-let reach = 45;
-let breakthrough = 45;
-let membraneOn = true;
-let membraneGap = 30;
-let membraneOpacity = 45;
-let membraneDelay = 1500;
+// UV grid (rows × cols) — geometry for the line / fill render modes.
+let gridDirs = [];
+let gRows = 0, gCols = 0;
+let gPX = null, gPY = null, gA = null;   // per-vertex projected x/y and rim alpha
+
+// Performance: a frozen noise shape (skips ~16k noise() calls/frame) and a
+// low-resolution render buffer (cuts the additive-blend fill-rate).
+let noiseField = null;     // precomputed noise per sphere point (static shape)
+let gridNoiseField = null; // precomputed noise per grid vertex (static shape)
+let lowBuf = null, lowCtx = null;   // offscreen buffer for the Render-scale down-render
+let fpsEl = null, fpsLastMs = 0;   // framerate readout in the topbar
+let renderMs = 16;                 // smoothed render time (ms) — the real, un-vsync-capped cost
+
+// ── UI-controlled settings ──────────────────────────────────────────────────
+// These are ALL initialised from the matching input in index.html at setup()
+// (see the bind() calls). To change a default, edit only the `value="…"` in
+// index.html — nothing here needs touching.
+let sphereCount, renderMode;
+let noiseScaleVal, noiseOffsetX, noiseOffsetY, noiseSpeed;
+let glow, pointSize, hollow, renderScale, staticShape;
+let specialCount, specialSize, specialSeed, accentBlend;
+let gradDiameter, gradDensity, particleBlend;
+let particlesOn, particleCount, pullForce, floatTrail, reach, cloudSize, breakthrough;
+let membraneOn, membraneGap, membraneOpacity, membraneDelay, membGradDiameter, membGradDensity, membGradCenter, membGradWidth;
+// ─────────────────────────────────────────────────────────────────────────────
+
 let noiseHist = [];
 let membNT = 0;
 let noiseT = 0;
@@ -56,6 +70,7 @@ let recordedChunks = [];
 let isRecording = false;
 let recordingHdCanvas = null;
 let recordingHdCtx = null;
+let recTimer = null, recStartMs = 0;   // in-button recording seconds counter
 
 function calcCanvas(ratioStr) {
   const [a, b] = ratioStr.split(':').map(Number);
@@ -71,15 +86,77 @@ function currentRatio() {
   return document.getElementById('sel-ratio').value;
 }
 
-// Fibonacci sphere — an even spread of unit vectors over the sphere.
-function buildPoints() {
-  dirs = new Array(N_POINTS);
+// Fibonacci sphere — an even spread of `count` unit vectors over the sphere.
+function buildPoints(count) {
+  dirs = new Array(count);
   const ga = Math.PI * (3 - Math.sqrt(5));
-  for (let i = 0; i < N_POINTS; i++) {
-    const y = 1 - (i / (N_POINTS - 1)) * 2;
+  for (let i = 0; i < count; i++) {
+    const y = 1 - (i / (count - 1)) * 2;
     const r = Math.sqrt(Math.max(0, 1 - y * y));
     const th = i * ga;
     dirs[i] = { x: Math.cos(th) * r, y: y, z: Math.sin(th) * r };
+  }
+  buildAccentOrder(count);
+}
+
+// A tiny seeded PRNG so the accent Seed slider deterministically reshuffles which
+// points get picked (same seed → same set, every reload).
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Roll a value per point from the seed, then rank them: the accent slider takes
+// the first N. Rebuilt on a density change or when the Seed slider moves.
+function buildAccentOrder(count) {
+  const rng = mulberry32(((specialSeed | 0) >>> 0) * 2654435761 + 0x9E3779B9);
+  spRand = new Float32Array(count);
+  for (let i = 0; i < count; i++) spRand[i] = rng();
+  const order = Array.from({ length: count }, (_, i) => i).sort((a, b) => spRand[a] - spRand[b]);
+  spOrder = Int32Array.from(order);
+  accentRank = new Int32Array(count);
+  for (let rnk = 0; rnk < count; rnk++) accentRank[order[rnk]] = rnk;
+}
+
+// UV lat/long grid whose resolution scales with the density slider (used by the
+// wireframe / rings / meridians / fill modes so they have proper connectivity).
+function buildGrid(density) {
+  gRows = Math.round(constrain(Math.sqrt(density) * 0.62, 14, 72));
+  gCols = gRows * 2;
+  gridDirs = new Array(gRows * gCols);
+  let idx = 0;
+  for (let r = 0; r < gRows; r++) {
+    const phi = (r / (gRows - 1)) * Math.PI;   // 0..π latitude
+    const y = Math.cos(phi), rr = Math.sin(phi);
+    for (let c = 0; c < gCols; c++) {
+      const th = (c / gCols) * Math.PI * 2;
+      gridDirs[idx++] = { x: Math.cos(th) * rr, y: y, z: Math.sin(th) * rr };
+    }
+  }
+  gPX = new Float32Array(gRows * gCols);
+  gPY = new Float32Array(gRows * gCols);
+  gA = new Float32Array(gRows * gCols);
+}
+
+// Precompute the noise value of every point/vertex ONCE (frozen shape). The
+// per-frame render then only rotates + projects — no noise() at all.
+function buildNoiseField() {
+  const freq = map(noiseScaleVal, 1, 100, 0.4, 5.0);
+  const offX = noiseOffsetX * 0.01, offY = noiseOffsetY * 0.01;
+  noiseField = new Float32Array(sphereCount);
+  for (let i = 0; i < sphereCount; i++) {
+    const d = dirs[i];
+    noiseField[i] = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
+  }
+  const gn = gRows * gCols;
+  gridNoiseField = new Float32Array(gn);
+  for (let i = 0; i < gn; i++) {
+    const d = gridDirs[i];
+    gridNoiseField[i] = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
   }
 }
 
@@ -91,6 +168,7 @@ function buildFloaters() {
   hx = new Float32Array(MAX_FLOAT); hy = new Float32Array(MAX_FLOAT);
   fesc = new Float32Array(MAX_FLOAT); fAlpha = new Float32Array(MAX_FLOAT);
   fInside = new Uint8Array(MAX_FLOAT);
+  fchg = new Float32Array(MAX_FLOAT);
   for (let i = 0; i < MAX_FLOAT; i++) {
     fesc[i] = Math.random();
     respawnFloater(i);
@@ -117,6 +195,7 @@ function respawnFloater(i) {
   fvx[i] = random(-1, 1); fvy[i] = random(-1, 1);
   fAlpha[i] = 1;
   if (fInside) fInside[i] = 0;
+  if (fchg) fchg[i] = 0;
 }
 
 function makeSprite(r, g, bl, stops) {
@@ -131,25 +210,58 @@ function makeSprite(r, g, bl, stops) {
   return cv;
 }
 
-// Sphere sprite sets per colour bucket: soft bloom + crisp core.
+// One MERGED sprite per colour bucket: a crisp bright core baked into a soft
+// glow halo, so each point is a single drawImage instead of two (≈40% fewer
+// additive draws — the dominant cost). `coreStop` keeps the grain crisp.
 function buildSprites() {
   const ca = color(document.getElementById('colorAPick').value);
   const cb = color(document.getElementById('colorBPick').value);
   const gCore = map(glow, 1, 100, 0.16, 0.5);
+  const coreStop = map(pointSize, 1, 100, 0.09, 0.5);
 
-  glowSprites = new Array(N_BUCKETS);
-  coreSprites = new Array(N_BUCKETS);
+  coreSprites = new Array(N_BUCKETS);   // reused as the merged sprite set
   for (let b = 0; b < N_BUCKETS; b++) {
     const t = b / (N_BUCKETS - 1);
     const c = lerpColor(ca, cb, t);
     const r = Math.round(red(c)), g = Math.round(green(c)), bl = Math.round(blue(c));
-    glowSprites[b] = makeSprite(r, g, bl, [
-      [0.0, gCore], [0.30, gCore * 0.5], [0.6, gCore * 0.12], [1.0, 0]
-    ]);
     coreSprites[b] = makeSprite(r, g, bl, [
-      [0.0, 0.95], [0.5, 0.9], [0.72, 0.28], [1.0, 0]
+      [0.0, 0.98], [coreStop, 0.92], [coreStop * 1.7, gCore],
+      [0.5, gCore * 0.35], [0.78, gCore * 0.1], [1.0, 0]
     ]);
   }
+  buildSpecialSprite();   // keep the accent sprite in sync with glow / point size
+}
+
+// The accent-point sprites: a luminous orb, not a flat sticker. Two layers give
+// it the sphere's own depth + glow:
+//   • specialGlow — a soft additive halo (drawn 'lighter') that blooms into the
+//     surrounding points, so the accent belongs to the same lit shell.
+//   • specialCore — a SHADED ball (opaque, own colour kept) with an offset
+//     highlight → it reads as a rounded 3D bead, never a flat disc.
+function buildSpecialSprite() {
+  const base = color(document.getElementById('specialColorPick').value);
+  const r = Math.round(red(base)), g = Math.round(green(base)), b = Math.round(blue(base));
+  const light = lerpColor(base, color(255), 0.55);   // top-left highlight
+  const dark = lerpColor(base, color(0), 0.45);      // shaded far side
+  const rgb = c => `rgb(${Math.round(red(c))},${Math.round(green(c))},${Math.round(blue(c))})`;
+
+  specialGlow = makeSprite(r, g, b, [[0.0, 0.85], [0.28, 0.4], [0.6, 0.12], [1.0, 0]]);
+
+  const cv = document.createElement('canvas');
+  cv.width = SPRITE_PX; cv.height = SPRITE_PX;
+  const cx = cv.getContext('2d');
+  const cen = SPRITE_PX / 2;
+  const hx = cen - SPRITE_PX * 0.17, hy = cen - SPRITE_PX * 0.17;   // highlight offset
+  const grad = cx.createRadialGradient(hx, hy, SPRITE_PX * 0.02, cen, cen, cen);
+  grad.addColorStop(0.0, rgb(light));
+  grad.addColorStop(0.4, rgb(base));
+  grad.addColorStop(0.85, rgb(dark));
+  grad.addColorStop(1.0, rgb(dark));
+  cx.fillStyle = grad;
+  cx.beginPath();
+  cx.arc(cen, cen, cen * 0.94, 0, Math.PI * 2);   // filled circle → clean AA edge
+  cx.fill();
+  specialCore = cv;
 }
 
 // Single-colour sprite pair (soft glow + crisp core) in the given colour.
@@ -168,39 +280,72 @@ function buildFloatSprites() {
   [insideGlow, insideCore] = buildParticleSprites(document.getElementById('insideColorPick').value);
 }
 
+// Read a control's current value into a global (so defaults live in index.html)
+// and keep it in sync on every change. `onChange` runs any needed rebuild;
+// `isToggle` reads a checkbox's checked state instead of its value.
+function bind(id, setter, onChange, isToggle) {
+  const el = document.getElementById(id);
+  const read = () => (isToggle ? el.checked : el.value);
+  setter(read());                                    // apply the HTML default now
+  const run = () => { setter(read()); if (onChange) onChange(); };
+  el.addEventListener('input', run);
+  el.addEventListener('change', run);
+}
+
 function setup() {
   const [cW, cH] = calcCanvas(currentRatio());
   createCanvas(cW, cH).parent('canvas-container');
   pixelDensity(1);
   colorMode(RGB, 255);
 
-  noiseSeed(42);
-  buildPoints();
+  // Rebuild the frozen noise field when a noise-shaping control changes (only matters in static mode).
+  const refreshField = () => { if (staticShape) buildNoiseField(); };
+
+  // Every tunable is read from its HTML input — defaults live only in index.html.
+  bind('noise-seed-slider', v => noiseSeed(+v), refreshField);
+  bind('noise-scale-slider', v => noiseScaleVal = +v, refreshField);
+  bind('noise-x-slider', v => noiseOffsetX = +v, refreshField);
+  bind('noise-y-slider', v => noiseOffsetY = +v, refreshField);
+  bind('noise-speed-slider', v => noiseSpeed = +v * 0.001);
+  bind('glow-slider', v => glow = +v, buildSprites);
+  bind('pointsize-slider', v => pointSize = +v, buildSprites);
+  bind('density-slider', v => sphereCount = +v, () => { buildPoints(sphereCount); buildGrid(sphereCount); refreshField(); });
+  bind('render-mode', v => renderMode = v);
+  bind('render-scale-slider', v => renderScale = +v);
+  bind('static-shape-toggle', v => staticShape = v, () => { if (staticShape) buildNoiseField(); }, true);
+  bind('hollow-slider', v => hollow = +v);
+  bind('special-count-slider', v => specialCount = +v);
+  bind('special-size-slider', v => specialSize = +v);
+  bind('special-seed-slider', v => specialSeed = +v, () => buildAccentOrder(sphereCount));
+  bind('accent-blend', v => accentBlend = v);
+  bind('grad-diameter-slider', v => gradDiameter = +v);
+  bind('grad-density-slider', v => gradDensity = +v);
+  bind('particle-blend', v => particleBlend = v);
+  bind('particles-toggle', v => particlesOn = v, null, true);
+  bind('count-slider', v => particleCount = +v);
+  bind('pull-slider', v => pullForce = +v);
+  bind('elastic-slider', v => floatTrail = +v);
+  bind('reach-slider', v => reach = +v);
+  bind('cloud-size-slider', v => cloudSize = +v);
+  bind('breakthrough-slider', v => breakthrough = +v);
+  bind('membrane-toggle', v => membraneOn = v, null, true);
+  bind('membrane-gap-slider', v => membraneGap = +v);
+  bind('membrane-opacity-slider', v => membraneOpacity = +v);
+  bind('membrane-grad-diameter-slider', v => membGradDiameter = +v);
+  bind('membrane-grad-density-slider', v => membGradDensity = +v);
+  bind('membrane-grad-center-slider', v => membGradCenter = +v);
+  bind('membrane-grad-width-slider', v => membGradWidth = +v);
+  bind('membrane-delay-slider', v => membraneDelay = +v);
+
+  // Build geometry + sprites from the values just read.
   buildFloaters();
+  buildPoints(sphereCount);
+  buildGrid(sphereCount);
+  buildNoiseField();
   buildSprites();
   buildFloatSprites();
 
-  select("#noise-seed-slider").input(function () { noiseSeed(int(this.value())); });
-  select("#noise-scale-slider").input(function () { noiseScaleVal = int(this.value()); });
-  select("#noise-x-slider").input(function () { noiseOffsetX = int(this.value()); });
-  select("#noise-y-slider").input(function () { noiseOffsetY = int(this.value()); });
-  select("#noise-speed-slider").input(function () { noiseSpeed = int(this.value()) * 0.001; });
-  select("#glow-slider").input(function () { glow = int(this.value()); buildSprites(); });
-  select("#pointsize-slider").input(function () { pointSize = int(this.value()); });
-  select("#hollow-slider").input(function () { hollow = int(this.value()); });
-
-  select("#count-slider").input(function () { particleCount = int(this.value()); });
-  select("#pull-slider").input(function () { pullForce = int(this.value()); });
-  select("#elastic-slider").input(function () { floatTrail = int(this.value()); });
-  select("#reach-slider").input(function () { reach = int(this.value()); });
-  select("#breakthrough-slider").input(function () { breakthrough = int(this.value()); });
   select("#reset-particles").mousePressed(resetFloaters);
-
-  select("#membrane-toggle").changed(function () { membraneOn = this.checked(); });
-  select("#membrane-gap-slider").input(function () { membraneGap = int(this.value()); });
-  select("#membrane-opacity-slider").input(function () { membraneOpacity = int(this.value()); });
-  select("#membrane-delay-slider").input(function () { membraneDelay = int(this.value()); });
-
   select("#play-pause").mousePressed(togglePlay);
   select("#record-btn").mousePressed(toggleRecording);
   select("#export-png").mousePressed(exportPNG);
@@ -216,6 +361,8 @@ function setup() {
   const cnv = document.querySelector('#canvas-container canvas');
   cnv.addEventListener('mouseenter', function () { cursorOver = true; });
   cnv.addEventListener('mouseleave', function () { cursorOver = false; });
+
+  fpsEl = document.getElementById('fps');
 
   loop();   // always animating so floaters + interaction stay live
 }
@@ -239,7 +386,9 @@ function delayedNoiseT(now, delayMs) {
 }
 
 function draw() {
-  if (playing) { noiseT += noiseSpeed; rot += 0.0035; }
+  // In static-shape mode the noise is frozen (no per-frame recompute) — only the
+  // rotation advances, so the fixed organic blob just spins.
+  if (playing) { if (!staticShape) noiseT += noiseSpeed; rot += 0.0035; }
   floatT += 0.006;
 
   // Log noiseT so the membrane can sample a delayed value; keep ~6 s of history.
@@ -249,13 +398,42 @@ function draw() {
   membNT = delayedNoiseT(now, membraneDelay);
 
   if (!floatReady) { resetFloaters(); floatReady = true; }
-  updateFloaters();
+  if (particlesOn) updateFloaters();
 
-  renderScene(drawingContext, width, height, true, 1);
+  // Render scale < 100% renders the whole (fill-rate heavy) additive scene into a
+  // smaller offscreen buffer and upscales it — the glow is soft so it stays close,
+  // but the additive blend touches far fewer pixels. Full quality for exports.
+  const _rt = performance.now();
+  const rs = renderScale / 100;
+  if (rs > 0.999) {
+    renderScene(drawingContext, width, height, true, 1, 1);
+  } else {
+    const bw = Math.max(2, Math.round(width * rs)), bh = Math.max(2, Math.round(height * rs));
+    if (!lowBuf) { lowBuf = document.createElement('canvas'); lowCtx = lowBuf.getContext('2d'); }
+    if (lowBuf.width !== bw || lowBuf.height !== bh) { lowBuf.width = bw; lowBuf.height = bh; }
+    renderScene(lowCtx, bw, bh, true, rs, 1);
+    const dc = drawingContext;
+    dc.globalCompositeOperation = 'source-over';
+    dc.globalAlpha = 1;
+    dc.imageSmoothingEnabled = true;
+    dc.drawImage(lowBuf, 0, 0, width, height);
+  }
+  // Real render cost, smoothed. This is NOT vsync-capped, so it keeps dropping
+  // as you lower Density / Render scale / enable Static shape.
+  renderMs = renderMs * 0.9 + (performance.now() - _rt) * 0.1;
 
   if (isRecording && recordingHdCtx) {
     recordingHdCtx.clearRect(0, 0, recordingHdCanvas.width, recordingHdCanvas.height);
     recordingHdCtx.drawImage(drawingContext.canvas, 0, 0, recordingHdCanvas.width, recordingHdCanvas.height);
+  }
+
+  // Framerate readout — the framerate the render could sustain (1000 / render ms),
+  // uncapped by vsync. Updated a few times a second, centred over the canvas.
+  if (fpsEl && millis() - fpsLastMs > 250) {
+    fpsEl.textContent = Math.round(1000 / Math.max(0.01, renderMs)) + ' fps';
+    const r = drawingContext.canvas.getBoundingClientRect();
+    fpsEl.style.left = (r.left + r.width / 2) + 'px';
+    fpsLastMs = millis();
   }
 }
 
@@ -272,13 +450,15 @@ function updateFloaters() {
 
   const overC = cursorOver;
   const captureR = map(reach, 1, 100, minDim * 0.18, minDim * 0.65);
-  const attract = map(pullForce, 1, 100, 0.02, 0.12);
-  const followDamp = map(floatTrail, 1, 100, 0.88, 0.965);  // floatiness while following the cursor
+  const grabAmt = map(pullForce, 1, 100, 0.09, 0.22);       // how firmly captured particles are pulled into their cloud slot
   const returnEase = map(floatTrail, 1, 100, 0.09, 0.03);   // higher trail = slower, softer return
   const maxSp = minDim * 0.022;
   const wanderR = minDim * 0.025;
+  const cloudR = captureR * map(cloudSize, 1, 100, 0.0, 1.4);   // 0 = tight ball on the cursor … large = wide filled cloud
   const frac = breakthrough / 100;
   const cursorInside = overC && Math.hypot(mouseX - cx, mouseY - cy) < Rmem * 1.1;
+  const membResist = 0.32;   // how much of an inside particle's outward push the membrane holds back
+  const membEscape = 12;     // escape charge needed to pull an inside particle back out (~firm tug)
 
   for (let i = 0; i < particleCount; i++) {
     // Home = the particle's fixed anchor plus a small INDEPENDENT wobble. The
@@ -288,35 +468,64 @@ function updateFloaters() {
     hx[i] = ax[i] + Math.cos(a) * wanderR;
     hy[i] = ay[i] + Math.sin(a) * wanderR;
 
-    // Cursor capture weight: 1 next to the cursor, 0 at the edge of reach.
-    const canFollow = fInside[i] ? cursorInside : overC;
+    // Cursor capture weight: 1 next to the cursor, 0 at the edge of reach. Inside
+    // particles can now be grabbed from outside too, so the cursor can pull them
+    // back out (against the membrane's resistance).
+    const canFollow = overC;
     let w = 0;
     if (canFollow) {
-      const dx = mouseX - fx[i], dy = mouseY - fy[i];
-      const d = Math.hypot(dx, dy);
-      if (d < captureR) { w = 1 - d / captureR; fvx[i] += dx * attract * w; fvy[i] += dy * attract * w; }
+      const d = Math.hypot(mouseX - fx[i], mouseY - fy[i]);
+      if (d < captureR) {
+        w = 1 - d / captureR;
+        // Ease toward a personal slot that fills the cloud disc around the cursor
+        // (√fesc = even fill, no empty centre). Cloud size 0 → every slot is the
+        // cursor → a tight ball; larger → a wide filled cloud.
+        const ang = i * 2.39996 + floatT * 0.5;
+        const rad = cloudR * Math.sqrt(fesc[i]);
+        const tx = mouseX + Math.cos(ang) * rad, ty = mouseY + Math.sin(ang) * rad;
+        const grab = grabAmt * w * (fInside[i] ? 0.6 : 1);   // inside particles resist a little
+        fx[i] += (tx - fx[i]) * grab;
+        fy[i] += (ty - fy[i]) * grab;
+      }
     }
 
-    // Damp velocity — floaty while following, heavy once released so there is no
-    // momentum left to overshoot with.
-    const dmp = 0.80 + (followDamp - 0.80) * w;
-    fvx[i] *= dmp; fvy[i] *= dmp;
+    // Residual velocity (from membrane slides / edges) just decays.
+    fvx[i] *= 0.85; fvy[i] *= 0.85;
     fx[i] += fvx[i]; fy[i] += fvy[i];
 
-    // Return home by a plain exponential ease (no spring → no elastic rebound),
-    // suppressed while the cursor owns the particle.
-    const ease = returnEase * (1 - w);
-    fx[i] += (hx[i] - fx[i]) * ease;
-    fy[i] += (hy[i] - fy[i]) * ease;
+    // Ease back home when the cursor isn't holding it (no spring → no rebound).
+    // (1-w)² so even a moderately-captured particle commits to its cloud slot.
+    // A captured INSIDE particle skips this so its inside-home can't fight the
+    // cursor while it's being dragged out.
+    if (!(fInside[i] && w > 0.05)) {
+      const ease = returnEase * (1 - w) * (1 - w);
+      fx[i] += (hx[i] - fx[i]) * ease;
+      fy[i] += (hy[i] - fy[i]) * ease;
+    }
 
     // Membrane: contain / cross.
     const rx = fx[i] - cx, ry = fy[i] - cy, dc = Math.hypot(rx, ry) || 0.0001;
     if (fInside[i]) {
-      // Stay inside — stop at the inner wall and slide (no bounce).
-      if (dc > Rmem) {
-        fx[i] = cx + rx / dc * Rmem; fy[i] = cy + ry / dc * Rmem;
-        const vr = fvx[i] * rx / dc + fvy[i] * ry / dc;
-        if (vr > 0) { fvx[i] -= vr * rx / dc; fvy[i] -= vr * ry / dc; }
+      if (dc > Rmem && w > 0.05) {
+        // Being pulled out: the membrane resists (keeps only 1-membResist of the
+        // outward overshoot each frame, so it can't instantly fly free), but a
+        // firm, sustained pull builds an "escape charge" that finally releases it.
+        const held = Rmem + (dc - Rmem) * (1 - membResist);
+        fx[i] = cx + rx / dc * held; fy[i] = cy + ry / dc * held;
+        fchg[i] += w * Math.min(1, (held - Rmem) / (Rmem * 0.06));
+        if (fchg[i] > membEscape) {
+          fInside[i] = 0; fchg[i] = 0;
+          ax[i] = fx[i]; ay[i] = fy[i]; hx[i] = fx[i]; hy[i] = fy[i];
+        }
+      } else {
+        // Not being pulled clear → drain the charge and stay contained inside
+        // (slide along the inner wall, no bounce).
+        fchg[i] *= 0.9;
+        if (dc > Rmem) {
+          fx[i] = cx + rx / dc * Rmem; fy[i] = cy + ry / dc * Rmem;
+          const vr = fvx[i] * rx / dc + fvy[i] * ry / dc;
+          if (vr > 0) { fvx[i] -= vr * rx / dc; fvy[i] -= vr * ry / dc; }
+        }
       }
     } else if (dc < Rmem) {
       const penetrator = fesc[i] < frac;
@@ -343,7 +552,7 @@ function updateFloaters() {
     }
 
     // Speed clamp.
-    const sp = Math.hypot(fvx[i], fvy[i]);
+    const sp = Math.sqrt(fvx[i] * fvx[i] + fvy[i] * fvy[i]);
     if (sp > maxSp) { fvx[i] *= maxSp / sp; fvy[i] *= maxSp / sp; }
   }
 }
@@ -351,7 +560,7 @@ function updateFloaters() {
 // Draw the whole scene (sphere shell + membrane + floaters) onto ctx at W×H.
 // `opaque` paints the dark background (transparent for PNG export); `scale`
 // rescales positions/sizes when rendering at a different resolution.
-function renderScene(ctx, W, H, opaque, scale) {
+function renderScene(ctx, W, H, opaque, scale, stride) {
   const cx = W / 2, cy = H / 2;
   const minDim = Math.min(W, H);
   const R = minDim * 0.29;
@@ -361,15 +570,20 @@ function renderScene(ctx, W, H, opaque, scale) {
   const offX = noiseOffsetX * 0.01;
   const offY = noiseOffsetY * 0.01;
 
-  const glowSize = minDim * map(glow, 1, 100, 0.008, 0.030);
-  const coreSize = minDim * map(pointSize, 1, 100, 0.0025, 0.011);
-  const membSize = glowSize * 1.5;
+  // With a coarser stride each point covers for more, so grow it a little (but
+  // not fully, so slow machines also draw fewer pixels overall).
+  const sizeComp = Math.pow(stride, 0.4);
+  const glowSize = minDim * map(glow, 1, 100, 0.008, 0.030) * sizeComp;
+  const specMul = specialSize / 100;           // accent size relative to a normal point
   const gapWorld = minDim * map(membraneGap, 0, 100, 0.0, 0.05);
   const membAlpha = membraneOpacity / 100;
   const rimPow = map(hollow, 0, 100, 0.15, 4.0);
 
   const cyR = Math.cos(rot), syR = Math.sin(rot);
-  const tilt = 0.42, ct = Math.cos(tilt), st = Math.sin(tilt);
+  // Steep tilt: the auto-spin is around the pole axis, so tilting that axis into
+  // the screen puts both (antipodal) poles near the disc centre, where the hollow
+  // fade hides the "vortex" where the lines converge — while the spin stays lively.
+  const tilt = 1.3, ct = Math.cos(tilt), st = Math.sin(tilt);
 
   // Background.
   ctx.globalCompositeOperation = 'source-over';
@@ -377,55 +591,111 @@ function renderScene(ctx, W, H, opaque, scale) {
   if (opaque) { ctx.fillStyle = 'rgb(4,5,12)'; ctx.fillRect(0, 0, W, H); }
   else        { ctx.clearRect(0, 0, W, H); }
 
-  ctx.globalCompositeOperation = 'lighter';
-
-  // ── Sphere shell + membrane ──
-  for (let i = 0; i < N_POINTS; i++) {
-    const d = dirs[i];
-    const n = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
-    const rBase = R * (1 + (n - 0.5) * 2 * DISP);
-
-    const rx = d.x * cyR + d.z * syR;
-    const rz = -d.x * syR + d.z * cyR;
-    const ry = d.y * ct - rz * st;
-    const rz2 = d.y * st + rz * ct;
-
-    const rim = 1 - Math.abs(rz2);
-    const facing = map(rz2, -1, 1, 0.55, 1.0);
-    const alpha = Math.pow(rim, rimPow) * facing;
-    if (alpha < 0.004) continue;
-
-    const bucket = Math.min(N_BUCKETS - 1, Math.max(0, Math.round(n * (N_BUCKETS - 1))));
-
-    // Membrane — delayed-noise wobble, same orientation.
-    if (membraneOn && membAlpha > 0) {
-      const nm = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + membNT);
-      const rm = R * (1 + (nm - 0.5) * 2 * DISP) + gapWorld;
-      const perspM = focal / (focal - rz2 * rm);
-      const mx = cx + rx * rm * perspM, my = cy + ry * rm * perspM;
-      const ms = membSize * perspM;
-      const bm = Math.min(N_BUCKETS - 1, Math.max(0, Math.round(nm * (N_BUCKETS - 1))));
-      ctx.globalAlpha = alpha * membAlpha;
-      ctx.drawImage(glowSprites[bm], mx - ms / 2, my - ms / 2, ms, ms);
-    }
-
-    const persp = focal / (focal - rz2 * rBase);
-    const sx = cx + rx * rBase * persp, sy = cy + ry * rBase * persp;
-    const gs = glowSize * persp, cs = coreSize * persp;
-
-    ctx.globalAlpha = alpha;
-    ctx.drawImage(glowSprites[bucket], sx - gs / 2, sy - gs / 2, gs, gs);
-    ctx.globalAlpha = Math.min(1, alpha * 1.35);
-    ctx.drawImage(coreSprites[bucket], sx - cs / 2, sy - cs / 2, cs, cs);
+  // Radial background gradient — chosen colour at the centre fading to fully
+  // transparent at the edge. Diameter = radius; density = strength / spread.
+  if (gradDensity > 0) {
+    const gc = color(document.getElementById('gradColorPick').value);
+    const gr = Math.round(red(gc)), gg = Math.round(green(gc)), gb = Math.round(blue(gc));
+    const gRad = Math.max(1, minDim * map(gradDiameter, 0, 100, 0.1, 1.6));
+    const a0 = map(gradDensity, 0, 100, 0.0, 1.0);
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, gRad);
+    grad.addColorStop(0.0, `rgba(${gr},${gg},${gb},${a0})`);
+    grad.addColorStop(map(gradDensity, 0, 100, 0.15, 0.7), `rgba(${gr},${gg},${gb},${a0 * 0.35})`);
+    grad.addColorStop(1.0, `rgba(${gr},${gg},${gb},0)`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
   }
 
-  // ── Floating particles ──
+  ctx.globalCompositeOperation = 'lighter';
+
+  // ── Membrane: a single noise-shaped 2D blob filled with a radial gradient ──
+  // (one fill instead of ~5000 point sprites). Drawn behind the sphere.
+  const geo = { cx, cy, R, focal, freq, offX, offY, rimPow, gapWorld, membAlpha,
+                cyR, syR, ct, st, minDim, sizeComp, stride };
+  if (membraneOn && membAlpha > 0) {
+    drawMembraneShape(ctx, geo);
+  }
+
+  // ── Sphere shell ──
+  if (renderMode === 'points') {
+    for (let i = 0; i < sphereCount; i += stride) {
+      const d = dirs[i];
+      const n = staticShape ? noiseField[i] : noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
+      const rBase = R * (1 + (n - 0.5) * 2 * DISP);
+
+      const rx = d.x * cyR + d.z * syR;
+      const rz = -d.x * syR + d.z * cyR;
+      const ry = d.y * ct - rz * st;
+      const rz2 = d.y * st + rz * ct;
+
+      const rim = 1 - Math.abs(rz2);
+      const facing = map(rz2, -1, 1, 0.55, 1.0);
+      const alpha = Math.pow(rim, rimPow) * facing;
+      if (alpha < 0.004) continue;
+
+      // Accent points are drawn separately (solid + enlarged) in the pass below.
+      if (accentRank[i] < specialCount) continue;
+
+      const bucket = Math.min(N_BUCKETS - 1, Math.max(0, Math.round(n * (N_BUCKETS - 1))));
+
+      // Point — one merged sprite (crisp core + glow) = a single additive draw.
+      const persp = focal / (focal - rz2 * rBase);
+      const sx = cx + rx * rBase * persp, sy = cy + ry * rBase * persp;
+      const gs = glowSize * persp;
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(coreSprites[bucket], sx - gs / 2, sy - gs / 2, gs, gs);
+    }
+
+    // ── Accent points ── a handful of existing sphere points (the N lowest rolls),
+    // enlarged and rendered with the same depth cues as the shell: an additive glow
+    // halo that blooms into the neighbouring points, then a shaded 3D bead on top.
+    // Perspective sizes them (near = bigger) and facing dims the far side, so they
+    // sit INSIDE the sphere's lighting instead of floating on it like a sticker.
+    for (let k = 0; k < specialCount; k++) {
+      const i = spOrder[k];
+      const d = dirs[i];
+      const n = staticShape ? noiseField[i] : noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
+      const rBase = R * (1 + (n - 0.5) * 2 * DISP);
+      const rx = d.x * cyR + d.z * syR;
+      const rz = -d.x * syR + d.z * cyR;
+      const ry = d.y * ct - rz * st;
+      const rz2 = d.y * st + rz * ct;
+      const facing = map(rz2, -1, 1, 0.5, 1.0);        // far side sits deeper / dimmer
+      const persp = focal / (focal - rz2 * rBase);
+      const sx = cx + rx * rBase * persp, sy = cy + ry * rBase * persp;
+      const gs = glowSize * persp * specMul;
+
+      // Glow halo — additive, so it melts into the surrounding shell glow.
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.9 * facing;
+      const gh = gs * 2.2;
+      ctx.drawImage(specialGlow, sx - gh / 2, sy - gh / 2, gh, gh);
+
+      // Shaded 3D bead — its compositing is the accent Blend mode (Normal keeps the
+      // colour solid; Add makes it luminous, etc.). facing dims the far side.
+      ctx.globalCompositeOperation = accentBlend;
+      ctx.globalAlpha = 0.35 + 0.65 * facing;
+      ctx.drawImage(specialCore, sx - gs / 2, sy - gs / 2, gs, gs);
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 1;
+  } else if (renderMode === 'spikes') {
+    drawSpikes(ctx, geo, noiseT, 0, 1);
+  } else {
+    // Grid line / fill modes (membrane is the 2D blob above).
+    ctx.lineCap = 'round';
+    projectGrid(geo, noiseT, 0);
+    drawGridMode(ctx, geo, gridRowColors(), 1);
+  }
+
+  // ── Floating particles (soft glow + crisp core, full density) ──
+  ctx.globalCompositeOperation = particleBlend;   // per-particle blend mode
   const fGlow = minDim * 0.018, fCore = minDim * 0.0055;
-  for (let i = 0; i < particleCount; i++) {
-    const sx = cx + (fx[i] - width / 2) * scale;
-    const sy = cy + (fy[i] - height / 2) * scale;
+  for (let i = 0; particlesOn && i < particleCount; i++) {
     const al = fAlpha[i];
     if (al <= 0.004) continue;
+    const sx = cx + (fx[i] - width / 2) * scale;
+    const sy = cy + (fy[i] - height / 2) * scale;
     // White while floating outside; the inside colour once drawn into the sphere.
     const glowS = fInside[i] ? insideGlow : floatGlow;
     const coreS = fInside[i] ? insideCore : floatCore;
@@ -437,6 +707,188 @@ function renderScene(ctx, W, H, opaque, scale) {
 
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
+}
+
+// Membrane as a single 2D noise-wobbled blob filled with a radial gradient
+// (membrane colour at the centre → fully transparent at the edge). One fill per
+// frame instead of thousands of point sprites. The wobble spins with the sphere.
+function drawMembraneShape(ctx, g) {
+  const cx = g.cx, cy = g.cy, minDim = g.minDim;
+  const R = g.R, gapWorld = g.gapWorld, freq = g.freq, offX = g.offX, offY = g.offY;
+  const cyR = g.cyR, syR = g.syR, ct = g.ct, st = g.st;
+  const RmemBase = R + gapWorld;
+  const M = 120;
+
+  // The outline traces the sphere's ACTUAL silhouette: for each screen angle the
+  // silhouette direction is (cosθ, sinθ, 0) in view space (z = 0, so it projects
+  // 1:1). Inverse-rotate it into object space to read the SAME noise the sphere
+  // uses — at membNT, so the delayed-wobble membrane still trails the shape.
+  ctx.beginPath();
+  for (let i = 0; i <= M; i++) {
+    const th = (i / M) * Math.PI * 2;
+    const vx = Math.cos(th), vy = Math.sin(th);
+    // inverse tilt-X: rz = -vy·st, dy = vy·ct, rx = vx ; then inverse rot-Y
+    const rz = -vy * st, dy = vy * ct, rx = vx;
+    const dx = rx * cyR - rz * syR, dz = rx * syR + rz * cyR;
+    const nval = noise(dx * freq + offX, dy * freq + offY, dz * freq + membNT);
+    const rr = R * (1 + (nval - 0.5) * 2 * DISP) + gapWorld;
+    const px = cx + vx * rr, py = cy + vy * rr;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+
+  const mc = color(document.getElementById('membraneColorPick').value);
+  const mr = Math.round(red(mc)), mg = Math.round(green(mc)), mb = Math.round(blue(mc));
+
+  // A perfectly CIRCULAR radial gradient: transparent → colour → transparent
+  // (alpha ▸ colour ▸ alpha). Because the fill is clipped to the wobbly silhouette,
+  // the fixed colour ring is crossed differently around the shape — where the edge
+  // sits inside the ring the colour reads sharp, where the edge bulges past it the
+  // colour has already faded, so it drifts off into nothing. All four stops are
+  // manual:
+  //   diameter → overall radius of the gradient circle
+  //   position → where along that radius the colour peaks (0 centre … 1 rim)
+  //   width    → half-thickness of the colour band before it fades either side
+  //   density  → peak opacity of the colour
+  const a0 = map(membGradDensity, 0, 100, 0.0, 1.0) * g.membAlpha;
+  const gRad = Math.max(1, RmemBase * map(membGradDiameter, 0, 100, 0.4, 2.2));
+  const pos = map(membGradCenter, 0, 100, 0.0, 1.0);    // colour peak (fraction of gRad)
+  const halfW = map(membGradWidth, 0, 100, 0.02, 0.6);  // band half-width (fraction of gRad)
+  const clampOff = o => (o < 0 ? 0 : o > 1 ? 1 : o);
+  const col = a => `rgba(${mr},${mg},${mb},${a})`;
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, gRad);
+  // Offsets are non-decreasing after clamping, so they're always valid.
+  grad.addColorStop(0, col(0));
+  grad.addColorStop(clampOff(pos - halfW), col(0));
+  grad.addColorStop(clampOff(pos), col(a0));
+  grad.addColorStop(clampOff(pos + halfW), col(0));
+  grad.addColorStop(1, col(0));
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = grad;
+  ctx.fill();
+}
+
+/* ── Alternate render modes (wireframe / rings / meridians / fill / spikes) ── */
+
+// One colour per latitude row, lerped along the A→B gradient.
+function gridRowColors() {
+  const ca = color(document.getElementById('colorAPick').value);
+  const cb = color(document.getElementById('colorBPick').value);
+  const out = new Array(gRows);
+  for (let r = 0; r < gRows; r++) {
+    const c = lerpColor(ca, cb, gRows > 1 ? r / (gRows - 1) : 0);
+    out[r] = `rgb(${red(c) | 0},${green(c) | 0},${blue(c) | 0})`;
+  }
+  return out;
+}
+
+// Project every grid vertex for a given noise time / radius offset into gPX/gPY/gA.
+function projectGrid(g, useT, extraR) {
+  const N = gRows * gCols;
+  for (let i = 0; i < N; i++) {
+    const d = gridDirs[i];
+    const n = staticShape ? gridNoiseField[i] : noise(d.x * g.freq + g.offX, d.y * g.freq + g.offY, d.z * g.freq + useT);
+    const rr = g.R * (1 + (n - 0.5) * 2 * DISP) + extraR;
+    const rx = d.x * g.cyR + d.z * g.syR;
+    const rz = -d.x * g.syR + d.z * g.cyR;
+    const ry = d.y * g.ct - rz * g.st;
+    const rz2 = d.y * g.st + rz * g.ct;
+    const persp = g.focal / (g.focal - rz2 * rr);
+    gPX[i] = g.cx + rx * rr * persp;
+    gPY[i] = g.cy + ry * rr * persp;
+    const rim = 1 - Math.abs(rz2);
+    gA[i] = Math.pow(rim, g.rimPow) * map(rz2, -1, 1, 0.55, 1.0);
+  }
+}
+
+// A glowing segment: a wide faint halo pass + a thin bright core pass (additive).
+function glowLine(ctx, x0, y0, x1, y1, a, wCore, wHalo) {
+  if (a <= 0.004) return;
+  ctx.globalAlpha = a * 0.28; ctx.lineWidth = wHalo;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.globalAlpha = Math.min(1, a); ctx.lineWidth = wCore;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+}
+
+function drawGridMode(ctx, g, rowCols, alphaScale) {
+  const wCore = g.minDim * 0.0016 * g.sizeComp * (0.6 + glow / 140);
+  const wHalo = wCore * 4.5;
+  const step = Math.max(1, g.stride);
+
+  if (renderMode === 'fill') {
+    // Translucent glowing shell — additive quads shaded by latitude & facing.
+    for (let r = 0; r < gRows - 1; r += step) {
+      ctx.fillStyle = rowCols[r];
+      const b0 = r * gCols, b1 = (r + 1) * gCols;
+      for (let c = 0; c < gCols; c += step) {
+        const c2 = (c + step) % gCols;
+        const i0 = b0 + c, i1 = b0 + c2, i2 = b1 + c2, i3 = b1 + c;
+        const a = 0.25 * (gA[i0] + gA[i1] + gA[i2] + gA[i3]);
+        if (a < 0.012) continue;
+        ctx.globalAlpha = Math.min(1, a * 0.55 * alphaScale);
+        ctx.beginPath();
+        ctx.moveTo(gPX[i0], gPY[i0]); ctx.lineTo(gPX[i1], gPY[i1]);
+        ctx.lineTo(gPX[i2], gPY[i2]); ctx.lineTo(gPX[i3], gPY[i3]);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+    return;
+  }
+
+  const rings = renderMode === 'rings' || renderMode === 'wireframe';
+  const meridians = renderMode === 'meridians' || renderMode === 'wireframe';
+  const mStep = renderMode === 'wireframe' ? step * 2 : step;   // thin out wireframe meridians
+
+  if (rings) {
+    for (let r = 0; r < gRows; r += step) {
+      ctx.strokeStyle = rowCols[r];
+      const b = r * gCols;
+      for (let c = 0; c < gCols; c++) {
+        const i0 = b + c, i1 = b + ((c + 1) % gCols);
+        glowLine(ctx, gPX[i0], gPY[i0], gPX[i1], gPY[i1], 0.5 * (gA[i0] + gA[i1]) * alphaScale, wCore, wHalo);
+      }
+    }
+  }
+  if (meridians) {
+    for (let c = 0; c < gCols; c += mStep) {
+      for (let r = 0; r < gRows - 1; r++) {
+        const i0 = r * gCols + c, i1 = (r + 1) * gCols + c;
+        ctx.strokeStyle = rowCols[r];
+        glowLine(ctx, gPX[i0], gPY[i0], gPX[i1], gPY[i1], 0.5 * (gA[i0] + gA[i1]) * alphaScale, wCore, wHalo);
+      }
+    }
+  }
+}
+
+// Radial glowing lines from an inner core out to a thinned set of Fibonacci
+// points (many overlapping additive lines would blow out to white).
+function drawSpikes(ctx, g, useT, extraR, alphaScale) {
+  const wCore = g.minDim * 0.0012 * g.sizeComp * (0.6 + glow / 140);
+  const wHalo = wCore * 3.2;
+  const ca = color(document.getElementById('colorAPick').value);
+  const cb = color(document.getElementById('colorBPick').value);
+  const innerF = 0.34;
+  const spikeStep = Math.max(g.stride, Math.ceil(sphereCount / 1300));
+  alphaScale *= 0.5;
+  for (let i = 0; i < sphereCount; i += spikeStep) {
+    const d = dirs[i];
+    const n = staticShape ? noiseField[i] : noise(d.x * g.freq + g.offX, d.y * g.freq + g.offY, d.z * g.freq + useT);
+    const rOut = g.R * (1 + (n - 0.5) * 2 * DISP) + extraR;
+    const rIn = g.R * innerF + extraR;
+    const rx = d.x * g.cyR + d.z * g.syR;
+    const rz = -d.x * g.syR + d.z * g.cyR;
+    const ry = d.y * g.ct - rz * g.st;
+    const rz2 = d.y * g.st + rz * g.ct;
+    const rim = 1 - Math.abs(rz2);
+    const a = Math.pow(rim, g.rimPow) * map(rz2, -1, 1, 0.55, 1.0) * alphaScale;
+    if (a < 0.006) continue;
+    const pO = g.focal / (g.focal - rz2 * rOut), pI = g.focal / (g.focal - rz2 * rIn);
+    const ox = g.cx + rx * rOut * pO, oy = g.cy + ry * rOut * pO;
+    const ix = g.cx + rx * rIn * pI, iy = g.cy + ry * rIn * pI;
+    const c = lerpColor(ca, cb, (d.y + 1) * 0.5);
+    ctx.strokeStyle = `rgb(${red(c) | 0},${green(c) | 0},${blue(c) | 0})`;
+    glowLine(ctx, ix, iy, ox, oy, a, wCore, wHalo);
+  }
 }
 
 // Export the current frame as a transparent PNG at 4K (3840 px long edge).
@@ -451,7 +903,7 @@ function exportPNG() {
   const ectx = cv.getContext('2d');
   const scale = Math.min(EW, EH) / Math.min(width, height);
 
-  renderScene(ectx, EW, EH, false, scale);
+  renderScene(ectx, EW, EH, false, scale, 1);   // full quality for export
 
   cv.toBlob(function (blob) {
     const a = document.createElement('a');
@@ -506,15 +958,28 @@ function startRecording() {
   };
   mediaRecorder.start(100);
   isRecording = true;
-  document.getElementById('record-btn').textContent = '⏹ Stop rec';
-  document.getElementById('record-btn').classList.add('recording');
+  const btn = document.getElementById('record-btn');
+  btn.classList.add('recording');
+  // Live seconds counter in the button while recording.
+  recStartMs = performance.now();
+  const tick = () => { btn.textContent = '⏹ ' + fmtDur((performance.now() - recStartMs) / 1000); };
+  tick();
+  recTimer = setInterval(tick, 250);
+}
+
+// Format seconds as m:ss.
+function fmtDur(sec) {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return m + ':' + String(s).padStart(2, '0');
 }
 
 function stopRecording() {
   if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   isRecording = false;
-  document.getElementById('record-btn').textContent = '⏺ Record';
-  document.getElementById('record-btn').classList.remove('recording');
+  if (recTimer) { clearInterval(recTimer); recTimer = null; }
+  const btn = document.getElementById('record-btn');
+  btn.textContent = '⏺ Record';
+  btn.classList.remove('recording');
 }
 
 function windowResized() {

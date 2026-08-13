@@ -141,23 +141,23 @@
         <div class="ctrl">
           <label class="ctrl-label">Color</label>
           <div class="color-row">
-            <input type="color" class="color-swatch" id="specialColorPick" value="#45FDF5">
-            <input type="text"  class="hex-in" id="specialColor-hex" value="#45FDF5" maxlength="7" spellcheck="false">
+            <input type="color" class="color-swatch" id="specialColorPick" value="#ffffff">
+            <input type="text"  class="hex-in" id="specialColor-hex" value="#ffffff" maxlength="7" spellcheck="false">
           </div>
         </div>
 
         <div class="ctrl">
           <label class="ctrl-label">Size <span data-val="special-size-slider"></span></label>
-          <input type="range" class="slider" id="special-size-slider" min="100" max="600" step="10" value="120">
+          <input type="range" class="slider" id="special-size-slider" min="100" max="600" step="10" value="140">
         </div>
 
         <div class="ctrl">
           <label class="ctrl-label">Blend mode</label>
           <select id="accent-blend">
             <option value="source-over">Normal</option>
-            <option value="lighter">Add (glow)</option>
+            <option value="lighter" selected>Add (glow)</option>
             <option value="screen">Screen</option>
-            <option value="lighten" selected>Lighten</option>
+            <option value="lighten">Lighten</option>
             <option value="color-dodge">Color dodge</option>
             <option value="overlay">Overlay</option>
             <option value="difference">Difference</option>
@@ -249,7 +249,7 @@
 
         <div class="ctrl">
           <label class="ctrl-label">Cloud size <span data-val="cloud-size-slider"></span></label>
-          <input type="range" class="slider" id="cloud-size-slider" min="1" max="100" value="6">
+          <input type="range" class="slider" id="cloud-size-slider" min="1" max="100" value="20">
         </div>
 
         <div class="ctrl">

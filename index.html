@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sphere | v10b</title>
+  <title>Sphere | v10c</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <span id="toggleArrow">←</span> options
     </button>
     <span class="topbar-fps" id="fps"></span>
-    <span class="topbar-title">Sphere | v10b</span>
+    <span class="topbar-title">Sphere | v10c</span>
   </header>
 
   <div class="layout">
@@ -46,7 +46,7 @@
 
         <div class="ctrl">
           <label class="ctrl-label">Noise scale <span data-val="noise-scale-slider"></span></label>
-          <input type="range" class="slider" id="noise-scale-slider" min="1" max="100" value="3">
+          <input type="range" class="slider" id="noise-scale-slider" min="1" max="100" value="2">
         </div>
 
         <div class="ctrl">
@@ -80,7 +80,7 @@
 
         <div class="ctrl">
           <label class="ctrl-label">Glow intensity <span data-val="glow-slider"></span></label>
-          <input type="range" class="slider" id="glow-slider" min="1" max="100" value="55">
+          <input type="range" class="slider" id="glow-slider" min="1" max="100" value="45">
         </div>
 
         <div class="ctrl">
@@ -114,15 +114,15 @@
         <div class="ctrl">
           <label class="ctrl-label">Color A</label>
           <div class="color-row">
-            <input type="color" class="color-swatch" id="colorAPick" value="#67a7ff">
-            <input type="text"  class="hex-in" id="colorA-hex" value="#67a7ff" maxlength="7" spellcheck="false">
+            <input type="color" class="color-swatch" id="colorAPick" value="#ffffff">
+            <input type="text"  class="hex-in" id="colorA-hex" value="#ffffff" maxlength="7" spellcheck="false">
           </div>
         </div>
         <div class="ctrl">
           <label class="ctrl-label">Color B</label>
           <div class="color-row">
-            <input type="color" class="color-swatch" id="colorBPick" value="#5926e6">
-            <input type="text"  class="hex-in" id="colorB-hex" value="#5926e6" maxlength="7" spellcheck="false">
+            <input type="color" class="color-swatch" id="colorBPick" value="#ffffff">
+            <input type="text"  class="hex-in" id="colorB-hex" value="#ffffff" maxlength="7" spellcheck="false">
           </div>
         </div>
 
@@ -141,29 +141,66 @@
         <div class="ctrl">
           <label class="ctrl-label">Color</label>
           <div class="color-row">
-            <input type="color" class="color-swatch" id="specialColorPick" value="#ffffff">
-            <input type="text"  class="hex-in" id="specialColor-hex" value="#ffffff" maxlength="7" spellcheck="false">
+            <input type="color" class="color-swatch" id="specialColorPick" value="#45FDF5">
+            <input type="text"  class="hex-in" id="specialColor-hex" value="#45FDF5" maxlength="7" spellcheck="false">
           </div>
         </div>
 
         <div class="ctrl">
           <label class="ctrl-label">Size <span data-val="special-size-slider"></span></label>
-          <input type="range" class="slider" id="special-size-slider" min="100" max="600" step="10" value="140">
+          <input type="range" class="slider" id="special-size-slider" min="100" max="600" step="10" value="120">
         </div>
 
         <div class="ctrl">
           <label class="ctrl-label">Blend mode</label>
           <select id="accent-blend">
             <option value="source-over">Normal</option>
-            <option value="lighter" selected>Add (glow)</option>
+            <option value="lighter">Add (glow)</option>
             <option value="screen">Screen</option>
-            <option value="lighten">Lighten</option>
+            <option value="lighten" selected>Lighten</option>
             <option value="color-dodge">Color dodge</option>
             <option value="overlay">Overlay</option>
             <option value="difference">Difference</option>
             <option value="exclusion">Exclusion</option>
             <option value="multiply">Multiply</option>
           </select>
+        </div>
+
+        <label class="section-label">Refraction</label>
+
+        <div class="ctrl row">
+          <label class="ctrl-label">Enabled</label>
+          <input type="checkbox" id="refract-toggle" checked>
+        </div>
+
+        <div class="ctrl">
+          <label class="ctrl-label">Amount <span data-val="refract-amount-slider"></span></label>
+          <input type="range" class="slider" id="refract-amount-slider" min="0" max="100" value="43">
+        </div>
+
+        <div class="ctrl">
+          <label class="ctrl-label">Scale <span data-val="refract-scale-slider"></span></label>
+          <input type="range" class="slider" id="refract-scale-slider" min="1" max="100" value="8">
+        </div>
+
+        <div class="ctrl">
+          <label class="ctrl-label">Seed <span data-val="refract-seed-slider"></span></label>
+          <input type="range" class="slider" id="refract-seed-slider" min="0" max="999" value="0">
+        </div>
+
+        <div class="ctrl">
+          <label class="ctrl-label">Spread <span data-val="refract-spread-slider"></span></label>
+          <input type="range" class="slider" id="refract-spread-slider" min="0" max="100" value="45">
+        </div>
+
+        <div class="ctrl">
+          <label class="ctrl-label">Hue <span data-val="refract-hue-slider"></span></label>
+          <input type="range" class="slider" id="refract-hue-slider" min="0" max="100" value="62">
+        </div>
+
+        <div class="ctrl">
+          <label class="ctrl-label">Intensity <span data-val="refract-intensity-slider"></span></label>
+          <input type="range" class="slider" id="refract-intensity-slider" min="0" max="100" value="55">
         </div>
 
         <label class="section-label">Background</label>
@@ -178,12 +215,12 @@
 
         <div class="ctrl">
           <label class="ctrl-label">Gradient diameter <span data-val="grad-diameter-slider"></span></label>
-          <input type="range" class="slider" id="grad-diameter-slider" min="0" max="100" value="50">
+          <input type="range" class="slider" id="grad-diameter-slider" min="0" max="100" value="0">
         </div>
 
         <div class="ctrl">
           <label class="ctrl-label">Gradient density <span data-val="grad-density-slider"></span></label>
-          <input type="range" class="slider" id="grad-density-slider" min="0" max="100" value="60">
+          <input type="range" class="slider" id="grad-density-slider" min="0" max="100" value="0">
         </div>
 
         <label class="section-label">Particles</label>
@@ -249,7 +286,7 @@
 
         <div class="ctrl">
           <label class="ctrl-label">Cloud size <span data-val="cloud-size-slider"></span></label>
-          <input type="range" class="slider" id="cloud-size-slider" min="1" max="100" value="20">
+          <input type="range" class="slider" id="cloud-size-slider" min="1" max="100" value="6">
         </div>
 
         <div class="ctrl">
@@ -274,8 +311,8 @@
         <div class="ctrl">
           <label class="ctrl-label">Color</label>
           <div class="color-row">
-            <input type="color" class="color-swatch" id="membraneColorPick" value="#6526e6">
-            <input type="text"  class="hex-in" id="membraneColor-hex" value="#6526e6" maxlength="7" spellcheck="false">
+            <input type="color" class="color-swatch" id="membraneColorPick" value="#ebebeb">
+            <input type="text"  class="hex-in" id="membraneColor-hex" value="#ebebeb" maxlength="7" spellcheck="false">
           </div>
         </div>
 

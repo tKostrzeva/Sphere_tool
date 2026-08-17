@@ -40,6 +40,16 @@ body {
   align-items: center;
   justify-content: space-between;
   padding:     0 16px;
+  position:    relative;
+}
+.topbar-fps {
+  position:    absolute;
+  top:         50%;
+  transform:   translate(-50%, -50%);
+  font:        var(--fs-base) var(--font);
+  color:       var(--gray-3);
+  pointer-events: none;
+  white-space: nowrap;
 }
 .topbar-toggle {
   background: none;

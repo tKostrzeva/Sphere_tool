@@ -310,3 +310,24 @@ option { background: var(--surface); color: var(--text); }
   transition:    filter 0.15s;
 }
 .btn-filled:hover { filter: brightness(1.08); }
+
+/* ── Record button (teal "Clarity" gradient pill) ── */
+.btn-record {
+  width:         100%;
+  height:        var(--export-btn-h);
+  display:       flex;
+  align-items:   center;
+  justify-content: center;
+  padding:       0 8px;
+  background:    var(--grad-teal);
+  border:        none;
+  border-radius: var(--radius-pill);
+  font:          700 var(--fs-base) var(--font);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color:         var(--on-accent);
+  cursor:        pointer;
+  transition:    filter 0.15s;
+}
+.btn-record:hover { filter: brightness(1.08); }
+.btn-record.recording { filter: brightness(0.92) saturate(1.1); }

@@ -1,11 +1,10 @@
-// Sphere v08 — same as v07, tuned for weak GPUs. The additive canvas render is
-// fill-rate + draw-call bound, so: each point / particle is a single merged
-// sprite (bright core + glow baked in) instead of two draws; the membrane is
-// drawn at half density; and an adaptive governor raises the point stride when
-// the frame rate drops, keeping it smooth on slow machines (full quality on
-// fast ones and always for the PNG/video export).
+// Ghisha Modulator (Sphere) v13 — a noise-morphed sphere of glowing points with an
+// iridescent shell, a soft membrane and interactive floating particles. Each point
+// / particle is a single merged sprite (bright core + glow baked in). Rendered
+// additively on black; on white the additive layer is multiplied onto the page so
+// colours survive. Exports a transparent PNG, an opaque JPG and WebM/MP4 video,
+// all at the selected 1080p / 4K long edge.
 
-const N_POINTS = 11000;    // default number of points on the sphere shell
 const N_BUCKETS = 32;      // pre-tinted sphere sprites (A→B gradient)
 const N_IRIS = 96;         // pre-tinted sprites around the hue wheel (iridescence)
 const SPRITE_PX = 96;      // offscreen size of each sprite
@@ -16,12 +15,7 @@ let dirs = [];             // unit direction of each sphere point
 let coreSprites = [];      // merged crisp-core + glow sprite, one per colour bucket
 let membraneSprite = null; // soft bloom sprite for the point-based (v10) membrane
 let irisSprites = [];      // glow sprite around the full hue wheel (iridescent bands)
-let irisSat = 0.51;        // fixed saturation (iridescence controls removed in v13)
-let spRand = null;         // per-point random roll [0,1)
-let spOrder = null;        // point indices sorted by that roll (accents = the first N)
-let accentRank = null;     // inverse of spOrder: each point's rank (0 = first accent)
-let specialGlow = null;    // additive halo sprite for accents (luminous depth)
-let specialCore = null;    // shaded-orb sprite for accents (3D, keeps its colour)
+const irisSat = 0.51;      // iridescence saturation (fixed)
 
 // Floating particles (screen space).
 let fx, fy, fvx, fvy;      // position / velocity
@@ -38,48 +32,21 @@ let floatT = 0;            // flow-field time
 let floatReady = false;    // spread particles once the canvas has its real size
 let cursorOver = false;    // is the mouse actually hovering the canvas?
 
-// UV grid (rows × cols) — geometry for the line / fill render modes.
-let gridDirs = [];
-let gRows = 0, gCols = 0;
-let gPX = null, gPY = null, gA = null;   // per-vertex projected x/y and rim alpha
-
-// Performance: a frozen noise shape (skips ~16k noise() calls/frame) and a
-// low-resolution render buffer (cuts the additive-blend fill-rate).
-let noiseField = null;     // precomputed noise per sphere point (static shape)
-let gridNoiseField = null; // precomputed noise per grid vertex (static shape)
-let lowBuf = null, lowCtx = null;   // offscreen buffer for the Render-scale down-render
-let glowBuf = null, glowCtx = null; // offscreen additive glow layer (white-bg multiply)
-let fpsEl = null, fpsLastMs = 0;   // framerate readout in the topbar
-let renderMs = 16;                 // smoothed render time (ms) — the real, un-vsync-capped cost
-
-// ── UI-controlled settings ──────────────────────────────────────────────────
-// These are ALL initialised from the matching input in index.html at setup()
-// (see the bind() calls). To change a default, edit only the `value="…"` in
-// index.html — nothing here needs touching.
-// Fixed colours (removed from the UI in v13 — defaults preserved).
-const COLOR_A = '#b25be1', COLOR_B = '#ffffff';
+// ── Fixed look (controls removed from the UI in v13 — defaults preserved) ──
+const COLOR_A = '#b25be1', COLOR_B = '#ffffff';   // sphere shell A→B duotone
 const MEMBRANE_COLOR = '#c5a0de';
 const FLOAT_COLOR = '#1b0e45', INSIDE_COLOR = '#7D26E6';
-const FLOAT_COLOR_WHITE = '#b99be0';     // lighter outside-particle colour on white bg
-const GRAD_A_COLOR = '#4D0079';          // Gradient A — fixed purple
-
-// Fixed behaviour (controls removed in v13 — defaults preserved).
-const renderMode = 'points';
-const noiseOffsetX = 0, noiseOffsetY = 0;
+const FLOAT_COLOR_WHITE = '#b99be0';              // lighter outside particles on white bg
+const GRAD_A_COLOR = '#4D0079';                   // Gradient A — fixed purple
 const noiseSpeed = 0.007;
 const hollow = 40;
-const renderScale = 100;
-const staticShape = false;
-const specialCount = 0, specialSize = 120, specialSeed = 97, accentBlend = 'lighten'; // accents removed
-const irisOn = true, irisCoverage = 50, irisPatch = 45, irisBands = 35,
-      irisScale = 14, irisSeed = 0, irisAngle = 42, irisHue = 40;   // iridescence: Angle 42, Coverage 50
-const particleBlend = 'lighter';
-const particlesOn = true;
+const irisCoverage = 50, irisPatch = 45, irisBands = 35, irisScale = 14,
+      irisSeed = 0, irisAngle = 42, irisHue = 40;   // iridescence (Angle 42, Coverage 50)
 const pullForce = 1, floatTrail = 1, reach = 45, cloudSize = 25, breakthrough = 45;
-const membraneOn = true, membraneOpacity = 50, membraneDelay = 400;
+const membraneOpacity = 50, membraneDelay = 400;
 const membGradDiameter = 60, membGradDensity = 100, membGradCenter = 72, membGradWidth = 16;
 
-// Live (slider / toggle-controlled) settings.
+// ── Live (slider / toggle-controlled) settings ──
 let sphereCount, pointSize;             // both driven by the single Quality slider
 let noiseScaleVal, glow;
 let sphereShiftX = 0, sphereShiftY = 0, sphereScale = 1;
@@ -129,71 +96,6 @@ function buildPoints(count) {
     const r = Math.sqrt(Math.max(0, 1 - y * y));
     const th = i * ga;
     dirs[i] = { x: Math.cos(th) * r, y: y, z: Math.sin(th) * r };
-  }
-  buildAccentOrder(count);
-}
-
-// A tiny seeded PRNG so the accent Seed slider deterministically reshuffles which
-// points get picked (same seed → same set, every reload).
-function mulberry32(a) {
-  return function () {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-// Roll a value per point from the seed, then rank them: the accent slider takes
-// the first N. Rebuilt on a density change or when the Seed slider moves.
-function buildAccentOrder(count) {
-  const rng = mulberry32(((specialSeed | 0) >>> 0) * 2654435761 + 0x9E3779B9);
-  spRand = new Float32Array(count);
-  for (let i = 0; i < count; i++) spRand[i] = rng();
-  const order = Array.from({ length: count }, (_, i) => i).sort((a, b) => spRand[a] - spRand[b]);
-  spOrder = Int32Array.from(order);
-  accentRank = new Int32Array(count);
-  for (let rnk = 0; rnk < count; rnk++) accentRank[order[rnk]] = rnk;
-}
-
-// UV lat/long grid whose resolution scales with the density slider (used by the
-// wireframe / rings / meridians / fill modes so they have proper connectivity).
-function buildGrid(density) {
-  gRows = Math.round(constrain(Math.sqrt(density) * 0.62, 14, 72));
-  gCols = gRows * 2;
-  gridDirs = new Array(gRows * gCols);
-  let idx = 0;
-  for (let r = 0; r < gRows; r++) {
-    const phi = (r / (gRows - 1)) * Math.PI;   // 0..π latitude
-    const y = Math.cos(phi), rr = Math.sin(phi);
-    for (let c = 0; c < gCols; c++) {
-      const th = (c / gCols) * Math.PI * 2;
-      gridDirs[idx++] = { x: Math.cos(th) * rr, y: y, z: Math.sin(th) * rr };
-    }
-  }
-  gPX = new Float32Array(gRows * gCols);
-  gPY = new Float32Array(gRows * gCols);
-  gA = new Float32Array(gRows * gCols);
-}
-
-// Precompute the noise value of every point/vertex ONCE (frozen shape). The
-// per-frame render then only rotates + projects — no noise() at all.
-function buildNoiseField() {
-  const freq = map(noiseScaleVal, 1, 4, 0.25, 0.61);
-  // Base offsets keep X/Y positive (see noiseT) so the negative-folding of p5 noise
-  // doesn't mirror the shape left/right + top/bottom. Different per axis avoids a
-  // diagonal symmetry too → a genuinely organic asymmetric blob.
-  const offX = 50.3 + noiseOffsetX * 0.01, offY = 80.7 + noiseOffsetY * 0.01;
-  noiseField = new Float32Array(sphereCount);
-  for (let i = 0; i < sphereCount; i++) {
-    const d = dirs[i];
-    noiseField[i] = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
-  }
-  const gn = gRows * gCols;
-  gridNoiseField = new Float32Array(gn);
-  for (let i = 0; i < gn; i++) {
-    const d = gridDirs[i];
-    gridNoiseField[i] = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
   }
 }
 
@@ -312,38 +214,6 @@ function buildIrisSprites() {
   }
 }
 
-// The accent-point sprites: a luminous orb, not a flat sticker. Two layers give
-// it the sphere's own depth + glow:
-//   • specialGlow — a soft additive halo (drawn 'lighter') that blooms into the
-//     surrounding points, so the accent belongs to the same lit shell.
-//   • specialCore — a SHADED ball (opaque, own colour kept) with an offset
-//     highlight → it reads as a rounded 3D bead, never a flat disc.
-function buildSpecialSprite() {
-  const base = color(document.getElementById('specialColorPick').value);
-  const r = Math.round(red(base)), g = Math.round(green(base)), b = Math.round(blue(base));
-  const light = lerpColor(base, color(255), 0.55);   // top-left highlight
-  const dark = lerpColor(base, color(0), 0.45);      // shaded far side
-  const rgb = c => `rgb(${Math.round(red(c))},${Math.round(green(c))},${Math.round(blue(c))})`;
-
-  specialGlow = makeSprite(r, g, b, [[0.0, 0.85], [0.28, 0.4], [0.6, 0.12], [1.0, 0]]);
-
-  const cv = document.createElement('canvas');
-  cv.width = SPRITE_PX; cv.height = SPRITE_PX;
-  const cx = cv.getContext('2d');
-  const cen = SPRITE_PX / 2;
-  const hx = cen - SPRITE_PX * 0.17, hy = cen - SPRITE_PX * 0.17;   // highlight offset
-  const grad = cx.createRadialGradient(hx, hy, SPRITE_PX * 0.02, cen, cen, cen);
-  grad.addColorStop(0.0, rgb(light));
-  grad.addColorStop(0.4, rgb(base));
-  grad.addColorStop(0.85, rgb(dark));
-  grad.addColorStop(1.0, rgb(dark));
-  cx.fillStyle = grad;
-  cx.beginPath();
-  cx.arc(cen, cen, cen * 0.94, 0, Math.PI * 2);   // filled circle → clean AA edge
-  cx.fill();
-  specialCore = cv;
-}
-
 // Single-colour sprite pair (soft glow + crisp core) in the given colour.
 function buildParticleSprites(hex) {
   const c = color(hex);
@@ -391,7 +261,7 @@ function setup() {
     pointSize   = map(q, 1, 100, 45, 12.5);
   };
   bind('quality-slider', v => applyQuality(+v),
-       () => { buildPoints(sphereCount); buildGrid(sphereCount); buildSprites(); });
+       () => { buildPoints(sphereCount); buildSprites(); });
 
   bind('sphere-x-slider', v => sphereShiftX = +v);
   bind('sphere-y-slider', v => sphereShiftY = +v);
@@ -415,8 +285,6 @@ function setup() {
   // Build geometry + sprites from the values just read.
   buildFloaters();
   buildPoints(sphereCount);
-  buildGrid(sphereCount);
-  buildNoiseField();
   buildSprites();
   buildFloatSprites();
 
@@ -448,6 +316,7 @@ function setup() {
   });
 
   select("#play-pause").mousePressed(togglePlay);
+  select("#record-btn").mousePressed(toggleRecording);
   select("#export-png").mousePressed(exportPNG);
   select("#export-jpg").mousePressed(exportJPG);
 
@@ -466,9 +335,6 @@ function setup() {
   loop();   // always animating so floaters + interaction stay live
 }
 
-// Called from index.html when any colour changes.
-window.onColorChange = function () { buildSprites(); buildFloatSprites(); };
-
 function togglePlay() {
   playing = !playing;
   document.getElementById('play-pause').textContent = playing ? '⏸ Pause' : '▶ Play';
@@ -485,9 +351,8 @@ function delayedNoiseT(now, delayMs) {
 }
 
 function draw() {
-  // In static-shape mode the noise is frozen (no per-frame recompute) — only the
-  // rotation advances, so the fixed organic blob just spins.
-  if (playing) { if (!staticShape) noiseT += noiseSpeed; rot += 0.0035; }
+  // The noise morph and the auto-spin advance while playing.
+  if (playing) { noiseT += noiseSpeed; rot += 0.0035; }
   floatT += 0.006;
 
   // Log noiseT so the membrane can sample a delayed value; keep ~6 s of history.
@@ -497,29 +362,9 @@ function draw() {
   membNT = delayedNoiseT(now, membraneDelay);
 
   if (!floatReady) { resetFloaters(); floatReady = true; }
-  if (particlesOn) updateFloaters();
+  updateFloaters();
 
-  // Render scale < 100% renders the whole (fill-rate heavy) additive scene into a
-  // smaller offscreen buffer and upscales it — the glow is soft so it stays close,
-  // but the additive blend touches far fewer pixels. Full quality for exports.
-  const _rt = performance.now();
-  const rs = renderScale / 100;
-  if (rs > 0.999) {
-    renderScene(drawingContext, width, height, true, 1, 1);
-  } else {
-    const bw = Math.max(2, Math.round(width * rs)), bh = Math.max(2, Math.round(height * rs));
-    if (!lowBuf) { lowBuf = document.createElement('canvas'); lowCtx = lowBuf.getContext('2d'); }
-    if (lowBuf.width !== bw || lowBuf.height !== bh) { lowBuf.width = bw; lowBuf.height = bh; }
-    renderScene(lowCtx, bw, bh, true, rs, 1);
-    const dc = drawingContext;
-    dc.globalCompositeOperation = 'source-over';
-    dc.globalAlpha = 1;
-    dc.imageSmoothingEnabled = true;
-    dc.drawImage(lowBuf, 0, 0, width, height);
-  }
-  // Real render cost, smoothed. This is NOT vsync-capped, so it keeps dropping
-  // as you lower Density / Render scale / enable Static shape.
-  renderMs = renderMs * 0.9 + (performance.now() - _rt) * 0.1;
+  renderScene(drawingContext, width, height, true, 1);
 
   if (isRecording && recordingHdCtx) {
     recordingHdCtx.clearRect(0, 0, recordingHdCanvas.width, recordingHdCanvas.height);
@@ -648,9 +493,9 @@ function updateFloaters() {
 }
 
 // Draw the whole scene (sphere shell + membrane + floaters) onto ctx at W×H.
-// `opaque` paints the dark background (transparent for PNG export); `scale`
-// rescales positions/sizes when rendering at a different resolution.
-function renderScene(ctx, W, H, opaque, scale, stride) {
+// `opaque` paints the background (transparent for the PNG export); `scale`
+// rescales particle positions when rendering at a different resolution.
+function renderScene(ctx, W, H, opaque, scale) {
   const cx0 = W / 2, cy0 = H / 2;                         // base centre (particle reference)
   const cx = cx0 + (sphereShiftX / 100) * 0.42 * W;       // sphere + membrane centre (X shift)
   const cy = cy0 + (sphereShiftY / 100) * 0.42 * H;       // sphere + membrane centre (Y shift)
@@ -659,14 +504,8 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
   const focal = R * 3.4;
 
   const freq = map(noiseScaleVal, 1, 4, 0.25, 0.61);
-  const offX = 50.3 + noiseOffsetX * 0.01;   // base offsets break p5-noise mirror symmetry
-  const offY = 80.7 + noiseOffsetY * 0.01;   // (must match buildNoiseField so static mode agrees)
-
-  // With a coarser stride each point covers for more, so grow it a little (but
-  // not fully, so slow machines also draw fewer pixels overall).
-  const sizeComp = Math.pow(stride, 0.4);
-  const glowSize = minDim * map(glow, 1, 100, 0.008, 0.030) * sizeComp * sphereScale;
-  const specMul = specialSize / 100;           // accent size relative to a normal point
+  const offX = 50.3, offY = 80.7;   // base offsets break p5-noise's mirror symmetry
+  const glowSize = minDim * map(glow, 1, 100, 0.008, 0.030) * sphereScale;
   // Iridescence params (computed once per frame). A smooth low-frequency hue field,
   // repeated `bands` times over the surface, paints continuous multi-colour bands.
   const irFreq = map(irisScale, 1, 100, 0.25, 3.0);   // lower = wider, flowier bands
@@ -711,125 +550,73 @@ function renderScene(ctx, W, H, opaque, scale, stride) {
   // ── Membrane ── two types (dropdown):
   //   'solid'  → a single noise-shaped 2D blob filled with a radial gradient
   //             (one fill; drawn BEHIND the shell).
-  //   'points' → the original v10 membrane: a soft bloom sprite drawn per shell
-  //             point at half density, at a delayed-noise-wobbled radius (drawn
-  //             interleaved with the shell, below).
+  //   'points' → a soft bloom sprite drawn per shell point at half density, at a
+  //             delayed-noise-wobbled radius (interleaved with the shell, below).
   const geo = { cx, cy, R, focal, freq, offX, offY, rimPow, gapWorld, membAlpha,
-                cyR, syR, ct, st, minDim, sizeComp, stride };
-  if (membraneOn && membAlpha > 0 && membraneType === 'solid') {
+                cyR, syR, ct, st, minDim };
+  if (membAlpha > 0 && membraneType === 'solid') {
     drawMembraneShape(ctx, geo);
   }
-  const drawMembPoints = membraneOn && membAlpha > 0 && membraneType === 'points';
+  const drawMembPoints = membAlpha > 0 && membraneType === 'points';
 
-  // ── Sphere shell ──
-  if (renderMode === 'points') {
-    for (let i = 0, k = 0; i < sphereCount; i += stride, k++) {
-      const d = dirs[i];
-      const n = staticShape ? noiseField[i] : noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
-      const rBase = R * (1 + (n - 0.5) * 2 * DISP);
+  // ── Sphere shell (glowing points) ──
+  for (let i = 0, k = 0; i < sphereCount; i++, k++) {
+    const d = dirs[i];
+    const n = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
+    const rBase = R * (1 + (n - 0.5) * 2 * DISP);
 
-      const rx = d.x * cyR + d.z * syR;
-      const rz = -d.x * syR + d.z * cyR;
-      const ry = d.y * ct - rz * st;
-      const rz2 = d.y * st + rz * ct;
+    const rx = d.x * cyR + d.z * syR;
+    const rz = -d.x * syR + d.z * cyR;
+    const ry = d.y * ct - rz * st;
+    const rz2 = d.y * st + rz * ct;
 
-      const rim = 1 - Math.abs(rz2);
-      const facing = map(rz2, -1, 1, 0.55, 1.0);
-      const alpha = Math.pow(rim, rimPow) * facing;
-      if (alpha < 0.004) continue;
+    const rim = 1 - Math.abs(rz2);
+    const facing = map(rz2, -1, 1, 0.55, 1.0);
+    const alpha = Math.pow(rim, rimPow) * facing;
+    if (alpha < 0.004) continue;
 
-      // Point membrane (v10): a soft bloom at every other drawn point, wobbled by
-      // the DELAYED noise (membNT) and pushed out by the gap. Drawn before the
-      // accent skip so the whole shell gets wrapped.
-      if (drawMembPoints && (k & 1) === 0) {
-        const nm = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + membNT);
-        const rm = R * (1 + (nm - 0.5) * 2 * DISP) + gapWorld;
-        const perspM = focal / (focal - rz2 * rm);
-        const mx = cx + rx * rm * perspM, my = cy + ry * rm * perspM;
-        const ms = membSize * perspM;
-        ctx.globalAlpha = alpha * membAlpha;
-        ctx.drawImage(membraneSprite, mx - ms / 2, my - ms / 2, ms, ms);
-      }
-
-      // Accent points are drawn separately (solid + enlarged) in the pass below.
-      if (accentRank[i] < specialCount) continue;
-
-      const bucket = Math.min(N_BUCKETS - 1, Math.max(0, Math.round(n * (N_BUCKETS - 1))));
-      const persp = focal / (focal - rz2 * rBase);
-      const sx = cx + rx * rBase * persp, sy = cy + ry * rBase * persp;
-      const gs = glowSize * persp;
-
-      // Iridescence coverage: a low-frequency mask noise decides WHERE the bands
-      // show (soft edge → patches fade in). Where the mask is low the point keeps
-      // its base (A→B) colour; where high it turns iridescent. Both are drawn
-      // additively and cross-faded by `w`, so the boundary is smooth and seamless.
-      let w = 0;
-      if (irisOn) {
-        const mnoise = noise(d.x * mFreq + mOff, d.y * mFreq + 5.1, d.z * mFreq + noiseT);
-        w = smoothstep(mCut - 0.13, mCut + 0.13, mnoise);
-      }
-      if (w < 0.997) {                                       // base part
-        ctx.globalAlpha = alpha * (1 - w);
-        ctx.drawImage(coreSprites[bucket], sx - gs / 2, sy - gs / 2, gs, gs);
-      }
-      if (w > 0.003) {                                       // iridescent part
-        // Smooth hue field → continuous multi-colour bands; rz2 term tightens them
-        // toward the grazing rim (projection) like a real bubble.
-        const field = noise(d.x * irFreq + irOff, d.y * irFreq + 8.3, d.z * irFreq + noiseT);
-        let hf = irHueF + field * irBandsN + rz2 * irAngleAmt;
-        hf -= Math.floor(hf);                                // wrap to [0,1)
-        ctx.globalAlpha = alpha * w;
-        ctx.drawImage(irisSprites[Math.min(N_IRIS - 1, Math.floor(hf * N_IRIS))], sx - gs / 2, sy - gs / 2, gs, gs);
-      }
+    // Point membrane: a soft bloom at every other point, wobbled by the DELAYED
+    // noise (membNT) and pushed out by the gap, so it trails the shell's shape.
+    if (drawMembPoints && (k & 1) === 0) {
+      const nm = noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + membNT);
+      const rm = R * (1 + (nm - 0.5) * 2 * DISP) + gapWorld;
+      const perspM = focal / (focal - rz2 * rm);
+      const mx = cx + rx * rm * perspM, my = cy + ry * rm * perspM;
+      const ms = membSize * perspM;
+      ctx.globalAlpha = alpha * membAlpha;
+      ctx.drawImage(membraneSprite, mx - ms / 2, my - ms / 2, ms, ms);
     }
 
-    // ── Accent points ── a handful of existing sphere points (the N lowest rolls),
-    // enlarged and rendered with the same depth cues as the shell: an additive glow
-    // halo that blooms into the neighbouring points, then a shaded 3D bead on top.
-    // Perspective sizes them (near = bigger) and facing dims the far side, so they
-    // sit INSIDE the sphere's lighting instead of floating on it like a sticker.
-    for (let k = 0; k < specialCount; k++) {
-      const i = spOrder[k];
-      const d = dirs[i];
-      const n = staticShape ? noiseField[i] : noise(d.x * freq + offX, d.y * freq + offY, d.z * freq + noiseT);
-      const rBase = R * (1 + (n - 0.5) * 2 * DISP);
-      const rx = d.x * cyR + d.z * syR;
-      const rz = -d.x * syR + d.z * cyR;
-      const ry = d.y * ct - rz * st;
-      const rz2 = d.y * st + rz * ct;
-      const facing = map(rz2, -1, 1, 0.5, 1.0);        // far side sits deeper / dimmer
-      const persp = focal / (focal - rz2 * rBase);
-      const sx = cx + rx * rBase * persp, sy = cy + ry * rBase * persp;
-      const gs = glowSize * persp * specMul;
+    const bucket = Math.min(N_BUCKETS - 1, Math.max(0, Math.round(n * (N_BUCKETS - 1))));
+    const persp = focal / (focal - rz2 * rBase);
+    const sx = cx + rx * rBase * persp, sy = cy + ry * rBase * persp;
+    const gs = glowSize * persp;
 
-      // Glow halo — additive, so it melts into the surrounding shell glow.
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = 0.9 * facing;
-      const gh = gs * 2.2;
-      ctx.drawImage(specialGlow, sx - gh / 2, sy - gh / 2, gh, gh);
-
-      // Shaded 3D bead — its compositing is the accent Blend mode (Normal keeps the
-      // colour solid; Add makes it luminous, etc.). facing dims the far side.
-      ctx.globalCompositeOperation = accentBlend;
-      ctx.globalAlpha = 0.35 + 0.65 * facing;
-      ctx.drawImage(specialCore, sx - gs / 2, sy - gs / 2, gs, gs);
+    // Iridescence coverage: a low-frequency mask noise decides WHERE the bands show
+    // (soft edge → patches fade in). Below the mask the point keeps its base (A→B)
+    // colour; above it turns iridescent. Cross-faded by `w` for a seamless boundary.
+    const mnoise = noise(d.x * mFreq + mOff, d.y * mFreq + 5.1, d.z * mFreq + noiseT);
+    const w = smoothstep(mCut - 0.13, mCut + 0.13, mnoise);
+    if (w < 0.997) {                                       // base part
+      ctx.globalAlpha = alpha * (1 - w);
+      ctx.drawImage(coreSprites[bucket], sx - gs / 2, sy - gs / 2, gs, gs);
     }
-    ctx.globalCompositeOperation = glowBlend;
-    ctx.globalAlpha = 1;
-  } else if (renderMode === 'spikes') {
-    drawSpikes(ctx, geo, noiseT, 0, 1);
-  } else {
-    // Grid line / fill modes (membrane is the 2D blob above).
-    ctx.lineCap = 'round';
-    projectGrid(geo, noiseT, 0);
-    drawGridMode(ctx, geo, gridRowColors(), 1);
+    if (w > 0.003) {                                       // iridescent part
+      // Smooth hue field → continuous multi-colour bands; rz2 term tightens them
+      // toward the grazing rim (projection) like a real bubble.
+      const field = noise(d.x * irFreq + irOff, d.y * irFreq + 8.3, d.z * irFreq + noiseT);
+      let hf = irHueF + field * irBandsN + rz2 * irAngleAmt;
+      hf -= Math.floor(hf);                                // wrap to [0,1)
+      ctx.globalAlpha = alpha * w;
+      ctx.drawImage(irisSprites[Math.min(N_IRIS - 1, Math.floor(hf * N_IRIS))], sx - gs / 2, sy - gs / 2, gs, gs);
+    }
   }
 
   // ── Floating particles (soft glow + crisp core, full density) ──
   ctx.globalCompositeOperation = glowBlend;   // additive on black, multiply on white
   const fGlow = minDim * 0.018, fCore = minDim * 0.0055;
   const whiteBg = glowBlend === 'multiply';
-  for (let i = 0; particlesOn && i < particleCount; i++) {
+  for (let i = 0; i < particleCount; i++) {
     const al = fAlpha[i];
     if (al <= 0.004) continue;
     const sx = cx0 + (fx[i] - width / 2) * scale;   // particles use the base centre; their
@@ -942,129 +729,6 @@ function drawMembraneShape(ctx, g) {
   ctx.fill();
 }
 
-/* ── Alternate render modes (wireframe / rings / meridians / fill / spikes) ── */
-
-// One colour per latitude row, lerped along the A→B gradient.
-function gridRowColors() {
-  const ca = color(COLOR_A);
-  const cb = color(COLOR_B);
-  const out = new Array(gRows);
-  for (let r = 0; r < gRows; r++) {
-    const c = lerpColor(ca, cb, gRows > 1 ? r / (gRows - 1) : 0);
-    out[r] = `rgb(${red(c) | 0},${green(c) | 0},${blue(c) | 0})`;
-  }
-  return out;
-}
-
-// Project every grid vertex for a given noise time / radius offset into gPX/gPY/gA.
-function projectGrid(g, useT, extraR) {
-  const N = gRows * gCols;
-  for (let i = 0; i < N; i++) {
-    const d = gridDirs[i];
-    const n = staticShape ? gridNoiseField[i] : noise(d.x * g.freq + g.offX, d.y * g.freq + g.offY, d.z * g.freq + useT);
-    const rr = g.R * (1 + (n - 0.5) * 2 * DISP) + extraR;
-    const rx = d.x * g.cyR + d.z * g.syR;
-    const rz = -d.x * g.syR + d.z * g.cyR;
-    const ry = d.y * g.ct - rz * g.st;
-    const rz2 = d.y * g.st + rz * g.ct;
-    const persp = g.focal / (g.focal - rz2 * rr);
-    gPX[i] = g.cx + rx * rr * persp;
-    gPY[i] = g.cy + ry * rr * persp;
-    const rim = 1 - Math.abs(rz2);
-    gA[i] = Math.pow(rim, g.rimPow) * map(rz2, -1, 1, 0.55, 1.0);
-  }
-}
-
-// A glowing segment: a wide faint halo pass + a thin bright core pass (additive).
-function glowLine(ctx, x0, y0, x1, y1, a, wCore, wHalo) {
-  if (a <= 0.004) return;
-  ctx.globalAlpha = a * 0.28; ctx.lineWidth = wHalo;
-  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-  ctx.globalAlpha = Math.min(1, a); ctx.lineWidth = wCore;
-  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-}
-
-function drawGridMode(ctx, g, rowCols, alphaScale) {
-  const wCore = g.minDim * 0.0016 * g.sizeComp * (0.6 + glow / 140);
-  const wHalo = wCore * 4.5;
-  const step = Math.max(1, g.stride);
-
-  if (renderMode === 'fill') {
-    // Translucent glowing shell — additive quads shaded by latitude & facing.
-    for (let r = 0; r < gRows - 1; r += step) {
-      ctx.fillStyle = rowCols[r];
-      const b0 = r * gCols, b1 = (r + 1) * gCols;
-      for (let c = 0; c < gCols; c += step) {
-        const c2 = (c + step) % gCols;
-        const i0 = b0 + c, i1 = b0 + c2, i2 = b1 + c2, i3 = b1 + c;
-        const a = 0.25 * (gA[i0] + gA[i1] + gA[i2] + gA[i3]);
-        if (a < 0.012) continue;
-        ctx.globalAlpha = Math.min(1, a * 0.55 * alphaScale);
-        ctx.beginPath();
-        ctx.moveTo(gPX[i0], gPY[i0]); ctx.lineTo(gPX[i1], gPY[i1]);
-        ctx.lineTo(gPX[i2], gPY[i2]); ctx.lineTo(gPX[i3], gPY[i3]);
-        ctx.closePath(); ctx.fill();
-      }
-    }
-    return;
-  }
-
-  const rings = renderMode === 'rings' || renderMode === 'wireframe';
-  const meridians = renderMode === 'meridians' || renderMode === 'wireframe';
-  const mStep = renderMode === 'wireframe' ? step * 2 : step;   // thin out wireframe meridians
-
-  if (rings) {
-    for (let r = 0; r < gRows; r += step) {
-      ctx.strokeStyle = rowCols[r];
-      const b = r * gCols;
-      for (let c = 0; c < gCols; c++) {
-        const i0 = b + c, i1 = b + ((c + 1) % gCols);
-        glowLine(ctx, gPX[i0], gPY[i0], gPX[i1], gPY[i1], 0.5 * (gA[i0] + gA[i1]) * alphaScale, wCore, wHalo);
-      }
-    }
-  }
-  if (meridians) {
-    for (let c = 0; c < gCols; c += mStep) {
-      for (let r = 0; r < gRows - 1; r++) {
-        const i0 = r * gCols + c, i1 = (r + 1) * gCols + c;
-        ctx.strokeStyle = rowCols[r];
-        glowLine(ctx, gPX[i0], gPY[i0], gPX[i1], gPY[i1], 0.5 * (gA[i0] + gA[i1]) * alphaScale, wCore, wHalo);
-      }
-    }
-  }
-}
-
-// Radial glowing lines from an inner core out to a thinned set of Fibonacci
-// points (many overlapping additive lines would blow out to white).
-function drawSpikes(ctx, g, useT, extraR, alphaScale) {
-  const wCore = g.minDim * 0.0012 * g.sizeComp * (0.6 + glow / 140);
-  const wHalo = wCore * 3.2;
-  const ca = color(COLOR_A);
-  const cb = color(COLOR_B);
-  const innerF = 0.34;
-  const spikeStep = Math.max(g.stride, Math.ceil(sphereCount / 1300));
-  alphaScale *= 0.5;
-  for (let i = 0; i < sphereCount; i += spikeStep) {
-    const d = dirs[i];
-    const n = staticShape ? noiseField[i] : noise(d.x * g.freq + g.offX, d.y * g.freq + g.offY, d.z * g.freq + useT);
-    const rOut = g.R * (1 + (n - 0.5) * 2 * DISP) + extraR;
-    const rIn = g.R * innerF + extraR;
-    const rx = d.x * g.cyR + d.z * g.syR;
-    const rz = -d.x * g.syR + d.z * g.cyR;
-    const ry = d.y * g.ct - rz * g.st;
-    const rz2 = d.y * g.st + rz * g.ct;
-    const rim = 1 - Math.abs(rz2);
-    const a = Math.pow(rim, g.rimPow) * map(rz2, -1, 1, 0.55, 1.0) * alphaScale;
-    if (a < 0.006) continue;
-    const pO = g.focal / (g.focal - rz2 * rOut), pI = g.focal / (g.focal - rz2 * rIn);
-    const ox = g.cx + rx * rOut * pO, oy = g.cy + ry * rOut * pO;
-    const ix = g.cx + rx * rIn * pI, iy = g.cy + ry * rIn * pI;
-    const c = lerpColor(ca, cb, (d.y + 1) * 0.5);
-    ctx.strokeStyle = `rgb(${red(c) | 0},${green(c) | 0},${blue(c) | 0})`;
-    glowLine(ctx, ix, iy, ox, oy, a, wCore, wHalo);
-  }
-}
-
 // Export long-edge follows the Quality toggle (1080p → 1920, 4K → 3840).
 function exportSize() {
   let EW, EH;
@@ -1080,7 +744,7 @@ function renderExport(opaque) {
   const cv = document.createElement('canvas');
   cv.width = EW; cv.height = EH;
   const scale = Math.min(EW, EH) / Math.min(width, height);
-  renderScene(cv.getContext('2d'), EW, EH, opaque, scale, 1);
+  renderScene(cv.getContext('2d'), EW, EH, opaque, scale);
   return cv;
 }
 
@@ -1153,11 +817,11 @@ function startRecording() {
   };
   mediaRecorder.start(100);
   isRecording = true;
-  // Reflect recording state in the "R" key hint (no record button in v13).
-  const hint = document.getElementById('rec-hint');
-  if (hint) hint.style.color = '#FF65E9';
+  // Live seconds counter in the Record button while recording.
+  const btn = document.getElementById('record-btn');
+  if (btn) btn.classList.add('recording');
   recStartMs = performance.now();
-  const tick = () => { if (hint) hint.innerHTML = '<b>R</b>Rec ' + fmtDur((performance.now() - recStartMs) / 1000); };
+  const tick = () => { if (btn) btn.textContent = '⏹ ' + fmtDur((performance.now() - recStartMs) / 1000); };
   tick();
   recTimer = setInterval(tick, 250);
 }
@@ -1172,8 +836,8 @@ function stopRecording() {
   if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   isRecording = false;
   if (recTimer) { clearInterval(recTimer); recTimer = null; }
-  const hint = document.getElementById('rec-hint');
-  if (hint) { hint.style.color = ''; hint.innerHTML = '<b>R</b>Record'; }
+  const btn = document.getElementById('record-btn');
+  if (btn) { btn.textContent = '⏺ Record'; btn.classList.remove('recording'); }
 }
 
 function windowResized() {

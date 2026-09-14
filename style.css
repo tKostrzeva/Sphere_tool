@@ -1,21 +1,60 @@
-@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;700&display=swap');
+/* ── Clash Grotesk (embedded, self-hosted from Fontshare) ── */
+@font-face {
+  font-family: 'Clash Grotesk';
+  src: url('fonts/ClashGrotesk-400.woff2') format('woff2');
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'Clash Grotesk';
+  src: url('fonts/ClashGrotesk-500.woff2') format('woff2');
+  font-weight: 500; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'Clash Grotesk';
+  src: url('fonts/ClashGrotesk-600.woff2') format('woff2');
+  font-weight: 600; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'Clash Grotesk';
+  src: url('fonts/ClashGrotesk-700.woff2') format('woff2');
+  font-weight: 700; font-style: normal; font-display: swap;
+}
 
 :root {
-  --gray-1: #CBCBCB;
-  --gray-2: #B5B5B5;
-  --gray-3: #737373;
-  --font:        'Geist Mono', monospace;
+  --font:        'Clash Grotesk', -apple-system, system-ui, sans-serif;
+
+  /* Black design system */
+  --bg:          #000000;
+  --surface:     #0E0E0E;
+  --surface-2:   #141414;
+  --line:        #262626;
+  --line-soft:   #1A1A1A;
+
+  --text:        #EDEDED;
+  --text-dim:    #8A8A8A;
+  --text-mute:   #5A5A5A;
+
+  /* Brand accents */
+  --grad-purple: linear-gradient(90deg, #8C31EC 0%, #FF65E9 100%);
+  --grad-teal:   linear-gradient(90deg, #2FBFA6 0%, #66E6E0 100%);
+  --grad-frame:  linear-gradient(135deg, #8C31EC 0%, #CF50FF 45%, #2FBFA6 100%);
+  --on-accent:   #17021F;
+
   --fs-xs:       9px;
   --fs-sm:       10px;
   --fs-base:     11px;
-  --radius-canvas:   0px;
-  --radius-control:  4px;
-  --topbar-h:    34px;
-  --footer-h:    34px;
-  --panel-w:     172px;
-  --panel-pad-x: 16px;
+
+  --radius-control:  8px;
+  --radius-pill:     999px;
+  --topbar-h:    44px;
+  --panel-w:     186px;
+  --panel-pad-x: 18px;
   --panel-pad-y: 20px;
   --ctrl-gap:    14px;
+  --app-margin:  40px;
+  --wrap-pad-v:  64px;      /* canvas vertical padding: reserves the bottom band
+                              for the logo + key hints, keeps the canvas centered */
+  --export-btn-h: 36px;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -23,37 +62,36 @@
 body {
   font-family: var(--font);
   font-size:   var(--fs-base);
-  color:       var(--gray-3);
-  background:  var(--gray-1);
+  color:       var(--text);
+  background:  var(--bg);
   height:      100vh;
   overflow:    hidden;
   display:     flex;
   flex-direction: column;
   user-select: none;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* ── Topbar ── */
+/* ── Topbar (fixed overlay, title only) ── */
 .topbar {
   height:      var(--topbar-h);
   flex-shrink: 0;
   display:     flex;
   align-items: center;
-  justify-content: space-between;
-  padding:     0 16px;
+  padding:     0 var(--app-margin) 0 var(--panel-pad-x);
+  position:    fixed;
+  top: 0; left: 0; right: 0;
+  z-index:     20;
+  background:  var(--bg);
+  pointer-events: none;
 }
-.topbar-toggle {
-  background: none;
-  border:     none;
-  font:       var(--fs-base) var(--font);
-  color:      var(--gray-3);
-  cursor:     pointer;
-  padding:    0 2px;
-  display:    flex;
-  align-items: center;
-  gap:        5px;
+.topbar-title {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text);
 }
-#toggleArrow { font-size: 18px; line-height: 1; }
-.topbar-title { font-size: var(--fs-base); }
 
 /* ── Layout ── */
 .layout {
@@ -63,21 +101,19 @@ body {
   min-height: 0;
 }
 
-/* ── Panel ── */
+/* ── Panel (fixed open on the left) ── */
 .panel {
   width:       var(--panel-w);
   flex-shrink: 0;
   overflow-y:  auto;
   overflow-x:  hidden;
-  transition:  width 0.25s ease, opacity 0.2s ease;
   scrollbar-width: none;
 }
 .panel::-webkit-scrollbar { display: none; }
-.panel.closed { width: 0; opacity: 0; pointer-events: none; }
 
 .panel-content {
   width:   var(--panel-w);
-  padding: var(--panel-pad-y) var(--panel-pad-x);
+  padding: var(--topbar-h) var(--panel-pad-x) var(--panel-pad-y);
   display: flex;
   flex-direction: column;
   gap:     var(--ctrl-gap);
@@ -88,7 +124,7 @@ body {
 .canvas-wrapper {
   flex:     1;
   display:  flex;
-  padding:  40px;
+  padding:  var(--wrap-pad-v) var(--app-margin);
   min-width: 0;
   overflow: hidden;
 }
@@ -97,31 +133,58 @@ body {
   align-items: center; justify-content: center;
   overflow: hidden;
 }
-#canvas-container canvas { display: block; }
-
-/* ── Footer ── */
-.footer {
-  height:      var(--footer-h);
-  flex-shrink: 0;
-  display:     flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding:     0 16px;
+/* Gradient hairline frame so the canvas never dissolves into the black page. */
+#canvas-container canvas {
+  display: block;
+  border: 1px solid transparent;
+  border-image: var(--grad-frame) 1;
 }
-.footer p { font-size: var(--fs-xs); color: var(--gray-3); }
-.footer a  { color: var(--gray-3); text-decoration-line: underline; text-underline-offset: 2px; }
+
+/* ── Brand logo (bottom-right; height + gutters match the export buttons) ── */
+.brand-logo {
+  position: fixed;
+  right:  var(--panel-pad-x);
+  bottom: var(--panel-pad-y);
+  height: var(--export-btn-h);
+  width:  80px;
+  opacity: 0.92;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* ── Keyboard hints (bottom-centre of the canvas area, aligned with the buttons) ── */
+.keys-hint {
+  position: fixed;
+  left: calc(50% + var(--panel-w) / 2);
+  transform: translateX(-50%);
+  bottom: var(--panel-pad-y);
+  height: var(--export-btn-h);
+  display: flex; align-items: center; gap: 18px;
+  font: 500 var(--fs-sm) var(--font);
+  letter-spacing: 0.06em;
+  color: var(--text-mute);
+  pointer-events: none;
+  z-index: 5;
+  white-space: nowrap;
+}
+.keys-hint b { color: var(--text); font-weight: 600; margin-right: 5px; }
 
 /* ── Controls ── */
-.ctrl { display: flex; flex-direction: column; gap: 5px; }
+.ctrl { display: flex; flex-direction: column; gap: 7px; }
 .ctrl.row { flex-direction: row; align-items: center; justify-content: space-between; }
-.ctrl-label { font-size: var(--fs-sm); }
-.ctrl-label span { float: right; }
+.ctrl-label {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  color: var(--text-dim);
+}
+.ctrl-label span { float: right; color: var(--text); font-weight: 600; letter-spacing: 0; }
 
 .slider {
   -webkit-appearance: none;
   width:        100%;
   height:       2px;
-  background:   var(--gray-2);
+  background:   var(--line);
   border-radius: 1px;
   outline:      none;
   cursor:       pointer;
@@ -129,90 +192,121 @@ body {
 }
 .slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 11px; height: 11px;
-  background: var(--gray-3);
-  border-radius: 2px;
+  width: 12px; height: 12px;
+  background: var(--text);
+  border-radius: var(--radius-pill);
 }
 .slider::-moz-range-thumb {
-  width: 11px; height: 11px;
-  background: var(--gray-3);
-  border-radius: 2px;
+  width: 12px; height: 12px;
+  background: var(--text);
+  border-radius: var(--radius-pill);
   border: none;
 }
 .slider:disabled { opacity: 0.4; cursor: default; }
 
 select {
   width:         100%;
-  background:    var(--gray-2);
-  border:        none;
+  background:    var(--surface);
+  border:        1px solid var(--line);
   border-radius: var(--radius-control);
-  padding:       6px 22px 6px 8px;
-  font:          var(--fs-base) var(--font);
-  color:         var(--gray-3);
+  padding:       8px 22px 8px 10px;
+  font:          500 var(--fs-base) var(--font);
+  letter-spacing: 0.04em;
+  color:         var(--text);
   cursor:        pointer;
   outline:       none;
   appearance:    none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23737373'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23EDEDED'/%3E%3C/svg%3E");
   background-repeat:   no-repeat;
-  background-position: right 8px center;
+  background-position: right 10px center;
 }
-
-/* ── Color pickers ── */
-.color-row { display: flex; gap: 6px; align-items: center; }
-.color-swatch {
-  width: 28px; min-width: 28px; height: 28px;
-  border: 1px solid var(--gray-3); border-radius: var(--radius-control);
-  padding: 2px; cursor: pointer; background: var(--gray-1);
-}
-.hex-in {
-  flex: 1; min-width: 0;
-  font: var(--fs-base) var(--font);
-  color: var(--gray-3); background: var(--gray-1);
-  border: 1px solid var(--gray-3); border-radius: var(--radius-control);
-  padding: 5px 6px; outline: none;
-}
-
-/* ── Buttons ── */
-.btn-stack {
-  display: flex; flex-direction: column;
-  gap: 6px; margin-top: auto; padding-top: var(--ctrl-gap);
-}
-.btn-row { display: flex; gap: 6px; }
-
-.btn-outline {
-  width:         100%;
-  padding:       8px;
-  background:    none;
-  border:        1px solid var(--gray-3);
-  border-radius: var(--radius-control);
-  font:          bold var(--fs-base) var(--font);
-  color:         var(--gray-3);
-  cursor:        pointer;
-  transition:    background 0.15s, color 0.15s;
-}
-.btn-outline:hover { background: var(--gray-3); color: var(--gray-1); }
-.btn-outline.active,
-.btn-outline.recording {
-  background: var(--gray-3); color: var(--gray-1);
-}
-
-.btn-filled {
-  flex:          1;
-  padding:       7px;
-  background:    var(--gray-3);
-  border:        none;
-  border-radius: var(--radius-control);
-  font:          bold var(--fs-base) var(--font);
-  color:         var(--gray-1);
-  cursor:        pointer;
-  transition:    opacity 0.15s;
-}
-.btn-filled:hover { opacity: 0.8; }
+select:hover { border-color: var(--text-mute); }
+option { background: var(--surface); color: var(--text); }
 
 /* ── Section label ── */
 .section-label {
   font-size: var(--fs-sm);
-  color: var(--gray-3);
-  border-top: 1px solid var(--gray-2);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text);
+  border-top: 1px solid var(--line-soft);
   padding-top: var(--ctrl-gap);
 }
+
+/* ── Gradient B swatch palette ── */
+.swatch-row { display: flex; gap: 6px; }
+.swatch-btn {
+  flex: 1; min-width: 0; height: 26px;
+  border: none;
+  border-radius: var(--radius-control);
+  padding: 0; cursor: pointer;
+  transition: transform 0.1s;
+}
+.swatch-btn:hover { transform: translateY(-1px); }
+.swatch-btn.is-selected {
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--text);
+}
+
+/* ── Segmented toggle (Quality / Background) ── */
+.toggle-row {
+  display: flex; gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 3px;
+}
+.toggle-btn {
+  flex: 1; min-width: 0; padding: 6px 0;
+  background: none; border: none;
+  border-radius: var(--radius-pill);
+  font: 600 var(--fs-base) var(--font);
+  letter-spacing: 0.01em;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.toggle-btn:hover { color: var(--text); }
+.toggle-btn.is-selected { background: var(--text); color: var(--bg); }
+
+/* ── Buttons ── */
+.btn-stack {
+  display: flex; flex-direction: column;
+  gap: 8px; margin-top: auto; padding-top: var(--ctrl-gap);
+}
+.btn-row { display: flex; gap: 8px; }
+
+.btn-outline {
+  width:         100%;
+  padding:       9px;
+  background:    none;
+  border:        1px solid rgba(255,255,255,0.45);
+  border-radius: var(--radius-pill);
+  font:          600 var(--fs-base) var(--font);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color:         var(--text);
+  cursor:        pointer;
+  transition:    background 0.15s, color 0.15s, border-color 0.15s;
+}
+.btn-outline:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
+.btn-outline.active { background: var(--text); color: var(--bg); }
+
+.btn-filled {
+  flex:          1;
+  height:        var(--export-btn-h);
+  display:       flex;
+  align-items:   center;
+  justify-content: center;
+  padding:       0 8px;
+  background:    var(--grad-purple);
+  border:        none;
+  border-radius: var(--radius-pill);
+  font:          700 var(--fs-base) var(--font);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color:         var(--on-accent);
+  cursor:        pointer;
+  transition:    filter 0.15s;
+}
+.btn-filled:hover { filter: brightness(1.08); }

@@ -38,7 +38,7 @@ const MEMBRANE_COLOR = '#c5a0de';
 const FLOAT_COLOR = '#1b0e45', INSIDE_COLOR = '#7D26E6';
 const FLOAT_COLOR_WHITE = '#b99be0';              // lighter outside particles on white bg
 const GRAD_A_COLOR = '#4D0079';                   // Gradient A — fixed purple
-const noiseSpeed = 0.002;
+const noiseSpeed = 0.005;
 const hollow = 40;
 const irisCoverage = 50, irisPatch = 45, irisBands = 35, irisScale = 14,
       irisSeed = 0, irisAngle = 42, irisHue = 40;   // iridescence (Angle 42, Coverage 50)
@@ -352,7 +352,7 @@ function delayedNoiseT(now, delayMs) {
 
 function draw() {
   // The noise morph and the auto-spin advance while playing.
-  if (playing) { noiseT += noiseSpeed; rot += 0.0035; }
+  if (playing) { noiseT += noiseSpeed; rot += 0.0025; }
   floatT += 0.006;
 
   // Log noiseT so the membrane can sample a delayed value; keep ~6 s of history.
